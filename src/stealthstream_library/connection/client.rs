@@ -9,7 +9,7 @@ use std::{
 use tokio::{net::TcpStream, signal};
 use tracing::error;
 
-use crate::{errors::ClientErrors, StealthStreamResult};
+use crate::{errors::ClientErrors, GoodbyeCodes, StealthStreamResult};
 
 use super::{stream::StealthStream, StealthStreamMessage};
 
@@ -79,8 +79,7 @@ impl Client {
 
 	/// Disconnects the client from the server by sending a disconnect message, as well as updating the connection state.
 	pub async fn disconnect(&self) -> ClientResult<()> {
-		self.send(StealthStreamMessage::Goodbye(Some("gracefully shutdown".to_string())))
-			.await?;
+		self.send(StealthStreamMessage::Goodbye(GoodbyeCodes::Graceful)).await?;
 		self.connection_state.store(false, Ordering::SeqCst);
 		Ok(())
 	}

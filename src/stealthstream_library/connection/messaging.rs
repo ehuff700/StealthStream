@@ -11,7 +11,7 @@ pub const GRACEFUL: u8 = 100;
 pub const SERVER_RESTARTING: u8 = 101;
 pub const UNKNOWN: u8 = 0;
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub enum GoodbyeCodes {
 	/// Indicates a graceful closure initiated by the client or server
 	Graceful,
@@ -41,12 +41,28 @@ impl From<GoodbyeCodes> for u8 {
 	}
 }
 
+impl From<Vec<u8>> for GoodbyeCodes {
+	fn from(value: Vec<u8>) -> Self {
+		match value.as_slice() {
+			[GRACEFUL] => GoodbyeCodes::Graceful,
+			[SERVER_RESTARTING] => GoodbyeCodes::ServerRestarting,
+			_ => GoodbyeCodes::Unknown,
+		}
+	}
+}
+
+impl GoodbyeCodes {
+	pub fn to_byte(&self) -> [u8; 1] {
+		[(*self).into()]
+	}
+}
+
 #[derive(Debug)]
 pub enum StealthStreamMessage {
-	Handshake,               // 0x0
-	Poke,                    // 0x1
-	Message(String),         // 0x2
-	Goodbye(Option<String>), // 0x3
+	Handshake,             // 0x0
+	Poke,                  // 0x1
+	Message(String),       // 0x2
+	Goodbye(GoodbyeCodes), // 0x3
 }
 
 impl StealthStreamMessage {
@@ -71,7 +87,7 @@ impl StealthStreamMessage {
 			HANDSHAKE_OPCODE => Ok(StealthStreamMessage::Handshake),
 			POKE_OPCODE => Ok(StealthStreamMessage::Poke),
 			MESSAGE_OPCODE => Ok(StealthStreamMessage::Message(String::new())),
-			GOODBYE_OPCODE => Ok(StealthStreamMessage::Goodbye(None)),
+			GOODBYE_OPCODE => Ok(StealthStreamMessage::Goodbye(GoodbyeCodes::Unknown)),
 			_ => Err(Error::InvalidOpcode(opcode)),
 		}
 	}
@@ -86,7 +102,7 @@ impl StealthStreamMessage {
 		// Serialize the message content based on type and calculate length
 		let content_bytes = match self {
 			StealthStreamMessage::Poke => Vec::new(),
-			StealthStreamMessage::Goodbye(reason) => reason.as_ref().map_or_else(Vec::new, |r| r.as_bytes().to_vec()),
+			StealthStreamMessage::Goodbye(reason) => reason.to_byte().to_vec(),
 			StealthStreamMessage::Message(text) => text.as_bytes().to_vec(),
 			_ => unreachable!(),
 		};

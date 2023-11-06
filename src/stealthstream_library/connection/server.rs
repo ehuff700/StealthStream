@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::future::Future;
-use std::net::{SocketAddr, ToSocketAddrs};
+use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::sync::Arc;
 
 use crate::connection::Client;
@@ -13,6 +13,14 @@ use tracing::{debug, error, info};
 use uuid::Uuid;
 
 pub type ServerResult<T> = std::result::Result<T, Error>;
+
+// TODO: implement builder pattern
+#[allow(dead_code)]
+pub struct ServerBuilder {
+	address: IpAddr,
+	port: u16,
+	poke_delay: u64,
+}
 
 pub struct Server {
 	listener: TcpListener,
@@ -32,7 +40,7 @@ impl Server {
 			.next()
 			.ok_or(Error::ServerError(anyhow!("Invalid SocketAddress provided").into()))?;
 
-		let listener = TcpListener::bind(address).await?; // TODO: Make Error Type
+		let listener = TcpListener::bind(address).await?;
 		info!("StealthStream server listening on {}", address);
 
 		Ok(Server {
@@ -83,11 +91,12 @@ impl Server {
 		Self::spawn_write_task(&client, write_rx, callback);
 	}
 
+	/// Pokes the client to keep the connection alive.
 	async fn poke_task(client: Arc<Client>) -> ServerResult<()> {
 		while client.is_connected() {
 			client.send(StealthStreamMessage::Poke).await?;
 			debug!("Poking connection for {:?}", client.address());
-			tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+			tokio::time::sleep(std::time::Duration::from_millis(5000)).await;
 		}
 		Ok(())
 	}
@@ -104,19 +113,11 @@ impl Server {
 							if let StealthStreamMessage::Goodbye(reason) = &message {
 								read_client.set_connection_state(false);
 								read_client.socket().shutdown_stream().await;
-								if let Some(reason) = reason {
-									info!(
-										"Recieved goodbye message from {:?} citing reason: {:?}",
-										read_client.address(),
-										reason
-									);
-								} else {
-									info!(
-										"Recieved goodbye message from {:?} citing reason: {:?}",
-										read_client.address(),
-										reason
-									);
-								}
+								info!(
+									"Recieved goodbye message from {:?} citing reason: {:?}",
+									read_client.address(),
+									reason
+								);
 							}
 
 							if let Err(e) = tx.send(message).await {

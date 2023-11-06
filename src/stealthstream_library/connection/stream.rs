@@ -10,7 +10,7 @@ use tokio::{
 };
 use tracing::{debug, trace};
 
-use crate::{StealthStreamMessage, StealthStreamResult};
+use crate::{GoodbyeCodes, StealthStreamMessage, StealthStreamResult};
 
 #[derive(Debug, Clone)]
 pub struct StealthStream {
@@ -73,14 +73,7 @@ impl StealthStream {
 
 		// Return the proper message, applying any needed processing
 		let message = match message_type {
-			StealthStreamMessage::Goodbye(_) => {
-				let reason = if !message_buffer.is_empty() {
-					Some(String::from_utf8(message_buffer)?)
-				} else {
-					None
-				};
-				StealthStreamMessage::Goodbye(reason)
-			},
+			StealthStreamMessage::Goodbye(_) => StealthStreamMessage::Goodbye(GoodbyeCodes::from(message_buffer)),
 			StealthStreamMessage::Message(_) => {
 				let message = String::from_utf8(message_buffer)?;
 				StealthStreamMessage::Message(message)
