@@ -111,8 +111,8 @@ impl Server {
 					match result {
 						Ok(message) => {
 							if let StealthStreamMessage::Goodbye(reason) = &message {
+								read_client.socket().close().await;
 								read_client.set_connection_state(false);
-								read_client.socket().shutdown_stream().await;
 								info!(
 									"Recieved goodbye message from {:?} citing reason: {:?}",
 									read_client.address(),

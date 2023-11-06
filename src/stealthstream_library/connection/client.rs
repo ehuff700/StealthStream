@@ -6,6 +6,7 @@ use std::{
 	},
 };
 
+use anyhow::anyhow;
 use tokio::{net::TcpStream, signal};
 use tracing::error;
 
@@ -65,8 +66,14 @@ impl Client {
 
 	/// Sends a message to/from the client to the stream.
 	pub async fn send(&self, message: StealthStreamMessage) -> ClientResult<()> {
-		let raw_message = message.to_message();
-		self.raw_socket.write(&raw_message).await.map_err(ClientErrors::from)
+		if self.is_connected() {
+			let raw_message = message.to_message();
+			self.raw_socket.write(&raw_message).await.map_err(ClientErrors::from)
+		} else {
+			Err(ClientErrors::ConnectionError(
+				anyhow!("Client is currently not connected").into(),
+			))
+		}
 	}
 
 	/// Recieves a message to/from the client
@@ -77,9 +84,12 @@ impl Client {
 		}
 	}
 
-	/// Disconnects the client from the server by sending a disconnect message, as well as updating the connection state.
+	/// Disconnects the client from the server by sending a [StealthStreamMessage::Goodbye] message as well as updating the connection state.
+	///
+	/// This method will additionally close the underlying socket, preventing any messages from being sent.
 	pub async fn disconnect(&self) -> ClientResult<()> {
 		self.send(StealthStreamMessage::Goodbye(GoodbyeCodes::Graceful)).await?;
+		self.raw_socket.close().await;
 		self.connection_state.store(false, Ordering::SeqCst);
 		Ok(())
 	}
@@ -100,5 +110,66 @@ impl Client {
 	/* Setters */
 	pub fn set_connection_state(&self, is_connected: bool) {
 		self.connection_state.store(is_connected, Ordering::SeqCst);
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use std::{future::Future, sync::Arc};
+
+	use rand::Rng;
+
+	use crate::{Client, Server, StealthStreamMessage};
+
+	async fn setup_server<F, Fut>(callback: F) -> Arc<Server>
+	where
+		F: Fn(StealthStreamMessage, Arc<Client>) -> Fut + Send + Sync + 'static,
+		Fut: Future<Output = ()> + Send + 'static,
+	{
+		let mut rng = rand::thread_rng();
+		let random_number: u16 = rng.gen_range(1000..10000);
+
+		let server = Arc::new(Server::bind(format!("127.0.0.1:{}", random_number)).await.unwrap());
+		tokio::task::spawn({
+			let task_server = server.clone();
+			async move {
+				task_server.listen(callback).await.unwrap();
+			}
+		});
+
+		server
+	}
+
+	#[tokio::test]
+	async fn test_disconnect() {
+		let server = setup_server(|_, _| async {}).await;
+		let client = super::Client::connect(server.addr()).await.unwrap();
+
+		assert!(client.is_connected());
+		client.disconnect().await.unwrap();
+		assert!(!client.is_connected());
+
+		// Assert that messages can no longer be sent after disconnect.
+		let result = client.send(StealthStreamMessage::Poke).await;
+		assert!(result.is_err());
+
+		drop(server);
+	}
+
+	// TODO: refactor this test to server
+	#[tokio::test]
+	async fn test_basic_send_recv() {
+		let server = setup_server(|message, _| async move {
+			println!("Received message: {:?}", message);
+			assert_eq!(message, StealthStreamMessage::Message("Tes1".to_string()));
+		})
+		.await;
+
+		let client = super::Client::connect(server.addr()).await.unwrap();
+
+		let message = super::StealthStreamMessage::Message("Test".to_string());
+		client.send(message).await.unwrap();
+
+		drop(server)
 	}
 }

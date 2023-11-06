@@ -11,7 +11,7 @@ pub const GRACEFUL: u8 = 100;
 pub const SERVER_RESTARTING: u8 = 101;
 pub const UNKNOWN: u8 = 0;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum GoodbyeCodes {
 	/// Indicates a graceful closure initiated by the client or server
 	Graceful,
@@ -57,7 +57,7 @@ impl GoodbyeCodes {
 	}
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum StealthStreamMessage {
 	Handshake,             // 0x0
 	Poke,                  // 0x1

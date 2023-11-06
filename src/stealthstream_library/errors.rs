@@ -21,8 +21,10 @@ pub enum Error {
 pub enum ClientErrors {
 	#[error(transparent)]
 	Io(#[from] std::io::Error),
+	#[error("{0}")]
+	ConnectionError(Box<dyn std::error::Error + Send + Sync + 'static>),
 	#[error("Client Error Occurred: {0}")]
-	ClientError(#[from] anyhow::Error),
+	MiscError(#[from] anyhow::Error),
 }
 
 #[derive(Debug, Error)]

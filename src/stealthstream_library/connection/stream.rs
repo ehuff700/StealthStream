@@ -6,7 +6,7 @@ use tokio::{
 		tcp::{OwnedReadHalf, OwnedWriteHalf},
 		TcpStream,
 	},
-	sync::Mutex,
+	sync::{Mutex, RwLock},
 };
 use tracing::{debug, trace};
 
@@ -15,7 +15,7 @@ use crate::{GoodbyeCodes, StealthStreamMessage, StealthStreamResult};
 #[derive(Debug, Clone)]
 pub struct StealthStream {
 	write_half: Arc<Mutex<OwnedWriteHalf>>,
-	read_half: Arc<Mutex<OwnedReadHalf>>,
+	read_half: Arc<RwLock<OwnedReadHalf>>,
 }
 
 impl StealthStream {
@@ -24,7 +24,7 @@ impl StealthStream {
 		let (read_half, write_half) = stream.into_split();
 		Self {
 			write_half: Arc::new(Mutex::new(write_half)),
-			read_half: Arc::new(Mutex::new(read_half)),
+			read_half: Arc::new(RwLock::new(read_half)),
 		}
 	}
 
@@ -51,7 +51,7 @@ impl StealthStream {
 
 	/// Reads a [StealthStreamMessage] from the underlying stream.
 	pub async fn read(&self) -> StealthStreamResult<StealthStreamMessage> {
-		let mut reader = self.read_half.lock().await;
+		let mut reader = self.read_half.write().await;
 		reader.readable().await?;
 
 		// Read the singular opco byte to determine which message this is.
@@ -84,9 +84,18 @@ impl StealthStream {
 		Ok(message)
 	}
 
-	/// Called by the server to shutdown the underlying stream.
-	pub async fn shutdown_stream(&self) {
+	/// Shuts down the underlying stream.
+	pub async fn close(&self) {
 		let mut write_half = self.write_half.lock().await;
 		write_half.shutdown().await.unwrap();
+	}
+
+	/* Getters */
+	pub fn writer(&self) -> &Arc<Mutex<OwnedWriteHalf>> {
+		&self.write_half
+	}
+
+	pub fn reader(&self) -> &Arc<RwLock<OwnedReadHalf>> {
+		&self.read_half
 	}
 }
