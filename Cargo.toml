@@ -1,11 +1,37 @@
 [package]
-name = "server"
+name = "stealthstream"
 version = "0.1.0"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-tokio = { version = "1.33.0", features = ["full"] }
+anyhow = "1.0.75"
+ctrlc = "3.4.1"
+thiserror = "1.0.50"
 tracing = "0.1.40"
 tracing-subscriber = "0.3.17"
+
+[dependencies.tokio]
+version = "1.33.0"
+features = [
+    "net",
+    "rt-multi-thread",
+    "signal",
+    "time",
+    "sync",
+    "io-util",
+    "macros",
+]
+
+[dependencies.uuid]
+version = "1.5.0"
+features = ["v4", "fast-rng"]
+
+[[bin]]
+name = 'stealthstream_server'
+path = "src/stealthstream_server/main.rs"
+
+[lib]
+name = "stealthstream_library"
+path = "src/stealthstream_library/lib.rs"
