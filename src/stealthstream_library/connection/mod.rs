@@ -1,9 +1,8 @@
 mod client;
-mod message_types;
+mod messaging;
 mod server;
 mod stream;
 
 pub use self::client::*;
-pub use self::message_types::*;
+pub use self::messaging::*;
 pub use self::server::*;
-

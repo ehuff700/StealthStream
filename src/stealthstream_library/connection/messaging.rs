@@ -1,9 +1,45 @@
 use crate::errors::Error;
 
+/* Opcode Consts */
 pub const HANDSHAKE_OPCODE: u8 = 0x0;
 pub const POKE_OPCODE: u8 = 0x1;
 pub const MESSAGE_OPCODE: u8 = 0x2;
 pub const GOODBYE_OPCODE: u8 = 0x3;
+
+/* Goodbye Codes */
+pub const GRACEFUL: u8 = 100;
+pub const SERVER_RESTARTING: u8 = 101;
+pub const UNKNOWN: u8 = 0;
+
+#[derive(Debug)]
+pub enum GoodbyeCodes {
+	/// Indicates a graceful closure initiated by the client or server
+	Graceful,
+	/// Sent by the server to indicate a server restart
+	ServerRestarting,
+	/// Fallback code
+	Unknown,
+}
+
+impl From<u8> for GoodbyeCodes {
+	fn from(value: u8) -> Self {
+		match value {
+			GRACEFUL => GoodbyeCodes::Graceful,
+			SERVER_RESTARTING => GoodbyeCodes::ServerRestarting,
+			_ => GoodbyeCodes::Unknown,
+		}
+	}
+}
+
+impl From<GoodbyeCodes> for u8 {
+	fn from(value: GoodbyeCodes) -> Self {
+		match value {
+			GoodbyeCodes::Graceful => GRACEFUL,
+			GoodbyeCodes::ServerRestarting => SERVER_RESTARTING,
+			GoodbyeCodes::Unknown => UNKNOWN,
+		}
+	}
+}
 
 #[derive(Debug)]
 pub enum StealthStreamMessage {

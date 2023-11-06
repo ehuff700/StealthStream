@@ -50,7 +50,7 @@ impl StealthStream {
 	}
 
 	/// Reads a [StealthStreamMessage] from the underlying stream.
-	pub async fn read(&self) -> StealthStreamResult<Option<StealthStreamMessage>> {
+	pub async fn read(&self) -> StealthStreamResult<StealthStreamMessage> {
 		let mut reader = self.read_half.lock().await;
 		reader.readable().await?;
 
@@ -88,7 +88,7 @@ impl StealthStream {
 			_ => message_type,
 		};
 
-		Ok(Some(message))
+		Ok(message)
 	}
 
 	/// Called by the server to shutdown the underlying stream.

@@ -70,10 +70,9 @@ impl Client {
 	}
 
 	/// Recieves a message to/from the client
-	pub async fn recieve(&self) -> StealthStreamResult<Option<StealthStreamMessage>> {
+	pub async fn recieve(&self) -> StealthStreamResult<StealthStreamMessage> {
 		match self.raw_socket.read().await {
-			Ok(Some(message)) => Ok(Some(message)),
-			Ok(None) => Ok(None),
+			Ok(message) => Ok(message),
 			Err(e) => Err(e),
 		}
 	}

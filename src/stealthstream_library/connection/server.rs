@@ -100,7 +100,7 @@ impl Server {
 				while read_client.is_connected() {
 					let result = read_client.recieve().await;
 					match result {
-						Ok(Some(message)) => {
+						Ok(message) => {
 							if let StealthStreamMessage::Goodbye(reason) = &message {
 								read_client.set_connection_state(false);
 								read_client.socket().shutdown_stream().await;
@@ -127,7 +127,6 @@ impl Server {
 							error!("Error reading from client: {:?}", e);
 							break;
 						},
-						_ => (),
 					};
 				}
 			}
