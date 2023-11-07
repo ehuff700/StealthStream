@@ -33,8 +33,8 @@ impl ServerBuilder {
 	}
 
 	/// Sets the ip address to bind the server to (localhost loopback by default).
-	pub fn address(mut self, address: IpAddr) -> Self {
-		self.address = address;
+	pub fn address(mut self, address: impl Into<IpAddr>) -> Self {
+		self.address = address.into();
 		self
 	}
 

@@ -2,7 +2,11 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use crate::{client::Client, protocol::StealthStreamMessage};
+use crate::{
+	client::Client,
+	errors::{HandshakeErrors, ServerErrors},
+	protocol::{StealthStreamMessage, INVALID_HANDSHAKE, SUPPORTED_VERSIONS},
+};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info};
@@ -53,14 +57,53 @@ impl Server {
 		}
 	}
 
+	/// Utility function that validates a [StealthStreamMessage::Handshake] message.
+	fn validate_handshake(version: u8, session_id: Option<Uuid>) -> Result<(), HandshakeErrors> {
+		if !SUPPORTED_VERSIONS.contains(&version) {
+			return Err(HandshakeErrors::UnsupportedVersion(version));
+		}
+
+		if let Some(session_id) = session_id {
+			if session_id.is_nil() || session_id.get_version_num() != 4 {
+				return Err(HandshakeErrors::InvalidSessionId(session_id));
+			}
+		}
+
+		Ok(())
+	}
+
+	async fn inititalize_handshake(&self, client: &Arc<Client>) -> ServerResult<()> {
+		if let StealthStreamMessage::Handshake { version, session_id } = client.recieve().await? {
+			debug!("Received version {} handshake from {:?}", version, client.peer_address());
+			Self::validate_handshake(version, session_id).map_err(ServerErrors::from)?;
+
+			// TODO: do something with session_id
+			info!("Upgraded connection to StealthStream for client {:?}", client.peer_address());
+			Ok(())
+		} else {
+			Err(ServerErrors::InvalidHandshake(HandshakeErrors::SkippedHandshake))?
+		}
+	}
+
 	/// Spawns a new read/write task for the provided client, as well as creating a poke task to keep the connection alive.
 	async fn handle_client(&self, client: Arc<Client>) {
-		let delay = self.poke_delay;
-		tokio::task::spawn(Self::poke_task(client.clone(), delay));
+		let handshake_result = self.inititalize_handshake(&client).await;
 
-		let (write_tx, write_rx) = mpsc::channel::<StealthStreamMessage>(32);
-		Self::spawn_read_task(&client, write_tx);
-		self.spawn_write_task(&client, write_rx);
+		if let Err(e) = handshake_result {
+			error!("Error handshaking for client: {:?}", e);
+			client
+				.disconnect_with_reason(INVALID_HANDSHAKE, &e.to_string())
+				.await
+				.unwrap();
+			drop(client);
+		} else {
+			let delay = self.poke_delay;
+			tokio::task::spawn(Self::poke_task(client.clone(), delay));
+
+			let (write_tx, write_rx) = mpsc::channel::<StealthStreamMessage>(32);
+			Self::spawn_read_task(&client, write_tx);
+			self.spawn_write_task(&client, write_rx);
+		}
 	}
 
 	/// Pokes the client to keep the connection alive, according to the configured delay.
@@ -83,8 +126,8 @@ impl Server {
 					match result {
 						Ok(message) => {
 							if let StealthStreamMessage::Goodbye { reason, code } = &message {
-								read_client.socket().close().await;
-								read_client.set_connection_state(false);
+								read_client.disconnect().await.unwrap();
+
 								info!(
 									"Recieved goodbye message from {:?}. Code: {:?} | Reason: {:?}",
 									read_client.peer_address(),

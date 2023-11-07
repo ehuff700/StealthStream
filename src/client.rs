@@ -12,7 +12,7 @@ use tracing::error;
 
 use crate::{
 	errors::ClientErrors,
-	protocol::{StealthStream, StealthStreamMessage, GRACEFUL},
+	protocol::{GoodbyeCodes, StealthStream, StealthStreamMessage, GRACEFUL},
 	StealthStreamResult,
 };
 
@@ -90,11 +90,20 @@ impl Client {
 		}
 	}
 
-	/// Disconnects the client from the server by sending a [StealthStreamMessage::Goodbye] message as well as updating the connection state.
+	/// Gracefully disconnects the client from the server by sending a [StealthStreamMessage::Goodbye] message as well as updating the connection state.
 	///
 	/// This method will additionally close the underlying socket, preventing any messages from being sent.
 	pub async fn disconnect(&self) -> ClientResult<()> {
 		self.send(StealthStreamMessage::create_goodbye(GRACEFUL)).await?;
+		self.raw_socket.close().await;
+		self.connection_state.store(false, Ordering::SeqCst);
+		Ok(())
+	}
+
+	/// Functionally the same as `disconnect`, but with a reason.
+	pub async fn disconnect_with_reason(&self, code: impl Into<GoodbyeCodes>, reason: &str) -> ClientResult<()> {
+		self.send(StealthStreamMessage::create_goodbye_with_reason(code, reason))
+			.await?;
 		self.raw_socket.close().await;
 		self.connection_state.store(false, Ordering::SeqCst);
 		Ok(())

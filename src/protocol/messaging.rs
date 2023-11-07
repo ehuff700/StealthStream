@@ -1,6 +1,10 @@
 use std::io::Read;
 
+use uuid::Uuid;
+
 use crate::errors::Error;
+
+pub(crate) const SUPPORTED_VERSIONS: [u8; 1] = [1];
 
 /* Opcode Consts */
 pub(crate) const HANDSHAKE_OPCODE: u8 = 0x0;
@@ -11,11 +15,12 @@ pub(crate) const GOODBYE_OPCODE: u8 = 0x3;
 /* Goodbye Codes */
 pub(crate) const GRACEFUL: u8 = 100;
 pub(crate) const SERVER_RESTARTING: u8 = 101;
+pub(crate) const INVALID_HANDSHAKE: u8 = 102;
 pub(crate) const UNKNOWN: u8 = 0;
 
 #[derive(Debug, PartialEq)]
 pub enum StealthStreamMessage {
-	Handshake,                                              // 0x0
+	Handshake { version: u8, session_id: Option<Uuid> },    // 0x0
 	Poke,                                                   // 0x1
 	Message(String),                                        // 0x2
 	Goodbye { code: GoodbyeCodes, reason: Option<String> }, // 0x3
@@ -27,24 +32,10 @@ impl StealthStreamMessage {
 	/// The opcode is always the first byte of the message and indicates the type of message.
 	pub fn opcode(&self) -> u8 {
 		match self {
-			StealthStreamMessage::Handshake => HANDSHAKE_OPCODE,
+			StealthStreamMessage::Handshake { .. } => HANDSHAKE_OPCODE,
 			StealthStreamMessage::Poke => POKE_OPCODE,
 			StealthStreamMessage::Message(_) => MESSAGE_OPCODE,
 			StealthStreamMessage::Goodbye { .. } => GOODBYE_OPCODE,
-		}
-	}
-
-	/// Converts an opcode byte to a MessageType.
-	///
-	/// This function will return an `InvalidOpcode` error if the opcode byte was not valid.
-	/// For the Message and Goodbye types, it generates an empty [String] / [Option] accordingly, leaving the allocation up to the caller.
-	pub fn from_opcode(opcode: u8) -> Result<StealthStreamMessage, Error> {
-		match opcode {
-			HANDSHAKE_OPCODE => Ok(StealthStreamMessage::Handshake),
-			POKE_OPCODE => Ok(StealthStreamMessage::Poke),
-			MESSAGE_OPCODE => Ok(StealthStreamMessage::Message(String::new())),
-			GOODBYE_OPCODE => Ok(Self::create_goodbye(GoodbyeCodes::Unknown)),
-			_ => Err(Error::InvalidOpcode(opcode)),
 		}
 	}
 
@@ -79,14 +70,32 @@ impl StealthStreamMessage {
 		message
 	}
 
-	/// Converts a raw message buffer into a `StealthStreamMessage`. This method is only applicable for MessageTypes that have extra data,
-	/// such as Goodbye and Message.
-	pub fn from_message(self, mut message_buffer: &[u8]) -> Result<Self, Error> {
-		match self {
-			StealthStreamMessage::Message(_) => Ok(StealthStreamMessage::Message(
+	/// Converts a raw message buffer into a `StealthStreamMessage`.
+	///
+	/// This method handles the deserialization of messages with extra content, such as Message, Goodbye, Handshake, etc.
+	/// If the provided opcode byte was not valid, this method will return an [Error::InvalidOpcode] error.
+	pub fn from_message(opcode_byte: u8, mut message_buffer: &[u8]) -> Result<Self, Error> {
+		match opcode_byte {
+			HANDSHAKE_OPCODE => {
+				let mut session_id: Option<Uuid> = None;
+
+				let mut version_buffer = [0u8; 1];
+				message_buffer.read_exact(&mut version_buffer)?;
+				let version = version_buffer[0];
+
+				let mut session_id_buffer = [0u8; 16];
+				message_buffer.read_exact(&mut session_id_buffer)?;
+
+				if !session_id_buffer.is_empty() {
+					session_id = Some(Uuid::from_bytes(session_id_buffer));
+				}
+
+				Ok(StealthStreamMessage::Handshake { version, session_id })
+			},
+			MESSAGE_OPCODE => Ok(StealthStreamMessage::Message(
 				String::from_utf8(message_buffer.to_vec()).unwrap(),
 			)),
-			StealthStreamMessage::Goodbye { .. } => {
+			GOODBYE_OPCODE => {
 				let mut goodbye_code = [0u8; 1];
 				message_buffer.read_exact(&mut goodbye_code)?;
 				let code = GoodbyeCodes::from(goodbye_code[0]);
@@ -102,7 +111,8 @@ impl StealthStreamMessage {
 
 				Ok(message)
 			},
-			_ => Ok(self),
+			POKE_OPCODE => Ok(StealthStreamMessage::Poke),
+			_ => Err(Error::InvalidOpcode(opcode_byte)),
 		}
 	}
 
@@ -129,6 +139,8 @@ pub enum GoodbyeCodes {
 	Graceful,
 	/// Sent by the server to indicate a server restart
 	ServerRestarting,
+	/// Sent by the server if the handshake failed / was invalid
+	InvalidHandshake,
 	/// Fallback code
 	Unknown,
 }
@@ -147,6 +159,7 @@ impl From<GoodbyeCodes> for u8 {
 	fn from(value: GoodbyeCodes) -> Self {
 		match value {
 			GoodbyeCodes::Graceful => GRACEFUL,
+			GoodbyeCodes::InvalidHandshake => INVALID_HANDSHAKE,
 			GoodbyeCodes::ServerRestarting => SERVER_RESTARTING,
 			GoodbyeCodes::Unknown => UNKNOWN,
 		}
@@ -158,6 +171,7 @@ impl From<Vec<u8>> for GoodbyeCodes {
 		match value.as_slice() {
 			[GRACEFUL] => GoodbyeCodes::Graceful,
 			[SERVER_RESTARTING] => GoodbyeCodes::ServerRestarting,
+			[INVALID_HANDSHAKE] => GoodbyeCodes::InvalidHandshake,
 			_ => GoodbyeCodes::Unknown,
 		}
 	}

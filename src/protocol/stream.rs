@@ -58,7 +58,6 @@ impl StealthStream {
 		let mut opcode_buffer = [0u8; 1];
 		reader.read_exact(&mut opcode_buffer).await?;
 		let opcode = opcode_buffer[0];
-		let message_type = StealthStreamMessage::from_opcode(opcode)?;
 
 		// Read the length buffer to find the length of the message
 		let mut length_buffer = [0u8; 2];
@@ -72,9 +71,9 @@ impl StealthStream {
 		drop(reader);
 
 		// Return the proper message type with custom message processing applied.
-		message_type.from_message(&message_buffer)
+		StealthStreamMessage::from_message(opcode, &message_buffer)
 	}
-
+	
 	/// Shuts down the underlying stream.
 	pub async fn close(&self) {
 		let mut write_half = self.write_half.lock().await;
