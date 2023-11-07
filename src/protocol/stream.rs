@@ -10,7 +10,7 @@ use tokio::{
 };
 use tracing::{debug, trace};
 
-use crate::{StealthStreamMessage, StealthStreamResult};
+use crate::{protocol::StealthStreamMessage, StealthStreamResult};
 
 #[derive(Debug, Clone)]
 pub struct StealthStream {

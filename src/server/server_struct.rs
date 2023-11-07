@@ -1,110 +1,14 @@
 use std::collections::HashMap;
-use std::future::Future;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::pin::Pin;
+use std::net::SocketAddr;
 use std::sync::Arc;
 
-use crate::errors::Error;
-use crate::protocol::StealthStreamMessage;
-use crate::Client;
+use crate::{client::Client, protocol::StealthStreamMessage};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info};
 use uuid::Uuid;
 
-pub type ServerResult<T> = std::result::Result<T, Error>;
-
-/// Type alias used to indicate a pinned and boxed future.
-pub type BoxedCallbackFuture = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
-
-/// This trait is used by the [Server] and [Client] to handle incoming messages.
-pub trait MessageCallback:
-	Fn(StealthStreamMessage, Arc<Client>) -> BoxedCallbackFuture + Sync + Send + 'static
-{
-}
-
-impl<F> MessageCallback for F where
-	F: Fn(StealthStreamMessage, Arc<Client>) -> BoxedCallbackFuture + Sync + Send + 'static
-{
-}
-
-/// Utility Struct to build a [Server] as needed
-pub struct ServerBuilder {
-	/// The Ip Address to bind the server to.
-	address: IpAddr,
-	/// The port number to bind to
-	port: u16,
-	/// The delay between each [StealthStreamMessage::Poke] message in ms.
-	poke_delay: u64,
-	/// The event handler that will be invoked when a [StealthStreamMessage] is received
-	event_handler: Option<Arc<dyn MessageCallback>>,
-}
-
-impl ServerBuilder {
-	fn new() -> Self {
-		Self {
-			address: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
-			port: 7007,
-			poke_delay: 5000,
-			event_handler: None,
-		}
-	}
-
-	/// Sets the ip address to bind the server to (localhost loopback by default).
-	pub fn address(mut self, address: IpAddr) -> Self {
-		self.address = address;
-		self
-	}
-
-	/// Sets the port number to bind to (7007 by default).
-	pub fn port(mut self, port: u16) -> Self {
-		self.port = port;
-		self
-	}
-
-	/// Determines the delay between each iteration of the [StealthStreamMessage::Poke] task, in ms.
-	///
-	/// 5000 ms by default.
-	pub fn set_poke_delay(mut self, poke_delay: u64) -> Self {
-		self.poke_delay = poke_delay;
-		self
-	}
-
-	/// Uses the provided event handler to handle [StealthStreamMessage]s.
-	pub fn with_event_handler(mut self, event_handler: impl MessageCallback) -> Self {
-		self.event_handler = Some(Arc::new(event_handler));
-		self
-	}
-
-	pub async fn build(self) -> ServerResult<Server> {
-		let address = SocketAddr::new(self.address, self.port);
-		let listener = TcpListener::bind(address).await?;
-		let event_handler = self.event_handler.unwrap_or_else(|| Self::default_event_handler());
-
-		info!("StealthStream server listening on {}", address);
-		Ok(Server {
-			listener,
-			address: SocketAddr::new(self.address, self.port),
-			poke_delay: self.poke_delay,
-			clients: HashMap::new(),
-			event_handler,
-		})
-	}
-
-	fn default_event_handler() -> Arc<dyn MessageCallback> {
-		let handler = |message: StealthStreamMessage, _: Arc<Client>| {
-			debug!("Received message: {:?}", message);
-			Box::pin(async move {}) as BoxedCallbackFuture
-		};
-		Arc::new(handler)
-	}
-}
-
-impl Default for ServerBuilder {
-	fn default() -> Self {
-		Self::new()
-	}
-}
+use super::{MessageCallback, ServerResult};
 
 pub struct Server {
 	listener: TcpListener,
@@ -116,6 +20,18 @@ pub struct Server {
 }
 
 impl Server {
+	/// Used internally by the ServerBuilder to create a new [Server] instance.
+	pub(super) fn new(
+		listener: TcpListener, address: SocketAddr, poke_delay: u64, event_handler: Arc<dyn MessageCallback>,
+	) -> Self {
+		Self {
+			listener,
+			address,
+			poke_delay,
+			clients: HashMap::new(),
+			event_handler,
+		}
+	}
 	/// Listens for incoming connections, blocking the current task.
 	///
 	/// On connection, client will be created from the [tokio::net::TcpStream] and [SocketAddr]. This task will be responsible for

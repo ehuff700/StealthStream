@@ -3,61 +3,15 @@ use std::io::Read;
 use crate::errors::Error;
 
 /* Opcode Consts */
-pub const HANDSHAKE_OPCODE: u8 = 0x0;
-pub const POKE_OPCODE: u8 = 0x1;
-pub const MESSAGE_OPCODE: u8 = 0x2;
-pub const GOODBYE_OPCODE: u8 = 0x3;
+pub(crate) const HANDSHAKE_OPCODE: u8 = 0x0;
+pub(crate) const POKE_OPCODE: u8 = 0x1;
+pub(crate) const MESSAGE_OPCODE: u8 = 0x2;
+pub(crate) const GOODBYE_OPCODE: u8 = 0x3;
 
 /* Goodbye Codes */
-pub const GRACEFUL: u8 = 100;
-pub const SERVER_RESTARTING: u8 = 101;
-pub const UNKNOWN: u8 = 0;
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum GoodbyeCodes {
-	/// Indicates a graceful closure initiated by the client or server
-	Graceful,
-	/// Sent by the server to indicate a server restart
-	ServerRestarting,
-	/// Fallback code
-	Unknown,
-}
-
-impl From<u8> for GoodbyeCodes {
-	fn from(value: u8) -> Self {
-		match value {
-			GRACEFUL => GoodbyeCodes::Graceful,
-			SERVER_RESTARTING => GoodbyeCodes::ServerRestarting,
-			_ => GoodbyeCodes::Unknown,
-		}
-	}
-}
-
-impl From<GoodbyeCodes> for u8 {
-	fn from(value: GoodbyeCodes) -> Self {
-		match value {
-			GoodbyeCodes::Graceful => GRACEFUL,
-			GoodbyeCodes::ServerRestarting => SERVER_RESTARTING,
-			GoodbyeCodes::Unknown => UNKNOWN,
-		}
-	}
-}
-
-impl From<Vec<u8>> for GoodbyeCodes {
-	fn from(value: Vec<u8>) -> Self {
-		match value.as_slice() {
-			[GRACEFUL] => GoodbyeCodes::Graceful,
-			[SERVER_RESTARTING] => GoodbyeCodes::ServerRestarting,
-			_ => GoodbyeCodes::Unknown,
-		}
-	}
-}
-
-impl GoodbyeCodes {
-	pub fn to_byte(&self) -> [u8; 1] {
-		[(*self).into()]
-	}
-}
+pub(crate) const GRACEFUL: u8 = 100;
+pub(crate) const SERVER_RESTARTING: u8 = 101;
+pub(crate) const UNKNOWN: u8 = 0;
 
 #[derive(Debug, PartialEq)]
 pub enum StealthStreamMessage {
@@ -103,7 +57,6 @@ impl StealthStreamMessage {
 
 		// Serialize the message content based on type and calculate length
 		let content_bytes = match self {
-			StealthStreamMessage::Poke => Vec::new(),
 			StealthStreamMessage::Goodbye { code, reason } => {
 				let mut code_bytes = code.to_byte().to_vec();
 				let mut reason_bytes = reason.as_ref().map_or_else(Vec::new, |v| v.as_bytes().to_vec());
@@ -113,7 +66,7 @@ impl StealthStreamMessage {
 			},
 
 			StealthStreamMessage::Message(text) => text.as_bytes().to_vec(),
-			_ => unreachable!(),
+			_ => Vec::new(),
 		};
 
 		// Add the length bytes to the message, using two bytes (16 bits) in big-endian format
@@ -167,5 +120,51 @@ impl StealthStreamMessage {
 			code: code.into(),
 			reason: Some(reason.to_string()),
 		}
+	}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum GoodbyeCodes {
+	/// Indicates a graceful closure initiated by the client or server
+	Graceful,
+	/// Sent by the server to indicate a server restart
+	ServerRestarting,
+	/// Fallback code
+	Unknown,
+}
+
+impl From<u8> for GoodbyeCodes {
+	fn from(value: u8) -> Self {
+		match value {
+			GRACEFUL => GoodbyeCodes::Graceful,
+			SERVER_RESTARTING => GoodbyeCodes::ServerRestarting,
+			_ => GoodbyeCodes::Unknown,
+		}
+	}
+}
+
+impl From<GoodbyeCodes> for u8 {
+	fn from(value: GoodbyeCodes) -> Self {
+		match value {
+			GoodbyeCodes::Graceful => GRACEFUL,
+			GoodbyeCodes::ServerRestarting => SERVER_RESTARTING,
+			GoodbyeCodes::Unknown => UNKNOWN,
+		}
+	}
+}
+
+impl From<Vec<u8>> for GoodbyeCodes {
+	fn from(value: Vec<u8>) -> Self {
+		match value.as_slice() {
+			[GRACEFUL] => GoodbyeCodes::Graceful,
+			[SERVER_RESTARTING] => GoodbyeCodes::ServerRestarting,
+			_ => GoodbyeCodes::Unknown,
+		}
+	}
+}
+
+impl GoodbyeCodes {
+	pub fn to_byte(&self) -> [u8; 1] {
+		[(*self).into()]
 	}
 }

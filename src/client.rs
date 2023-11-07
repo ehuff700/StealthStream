@@ -10,9 +10,11 @@ use anyhow::anyhow;
 use tokio::{net::TcpStream, signal};
 use tracing::error;
 
-use crate::{errors::ClientErrors, StealthStreamResult, GRACEFUL};
-
-use super::{StealthStream, StealthStreamMessage};
+use crate::{
+	errors::ClientErrors,
+	protocol::{StealthStream, StealthStreamMessage, GRACEFUL},
+	StealthStreamResult,
+};
 
 pub type ClientResult<T> = std::result::Result<T, ClientErrors>;
 
@@ -135,7 +137,10 @@ mod tests {
 
 	use rand::Rng;
 
-	use crate::{Server, ServerBuilder, StealthStreamMessage};
+	use crate::{
+		protocol::StealthStreamMessage,
+		server::{Server, ServerBuilder},
+	};
 
 	async fn setup_server() -> Arc<Server> {
 		let mut rng = rand::thread_rng();
@@ -170,15 +175,15 @@ mod tests {
 		drop(server);
 	}
 
-	// TODO: refactor this test to server
 	#[tokio::test]
-	async fn test_basic_send_recv() {
+	async fn test_basic_send() {
 		let server = setup_server().await;
 
 		let client = super::Client::connect(server.address()).await.unwrap();
 
 		let message = super::StealthStreamMessage::Message("Test".to_string());
-		client.send(message).await.unwrap();
+		let result = client.send(message).await;
+		assert!(result.is_ok());
 
 		drop(server)
 	}
