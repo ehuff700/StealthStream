@@ -10,7 +10,7 @@ use tokio::{
 };
 use tracing::{debug, trace};
 
-use crate::{GoodbyeCodes, StealthStreamMessage, StealthStreamResult};
+use crate::{StealthStreamMessage, StealthStreamResult};
 
 #[derive(Debug, Clone)]
 pub struct StealthStream {
@@ -71,17 +71,8 @@ impl StealthStream {
 
 		drop(reader);
 
-		// Return the proper message, applying any needed processing
-		let message = match message_type {
-			StealthStreamMessage::Goodbye(_) => StealthStreamMessage::Goodbye(GoodbyeCodes::from(message_buffer)),
-			StealthStreamMessage::Message(_) => {
-				let message = String::from_utf8(message_buffer)?;
-				StealthStreamMessage::Message(message)
-			},
-			_ => message_type,
-		};
-
-		Ok(message)
+		// Return the proper message type with custom message processing applied.
+		message_type.from_message(&message_buffer)
 	}
 
 	/// Shuts down the underlying stream.

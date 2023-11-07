@@ -4,8 +4,8 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::pin::Pin;
 use std::sync::Arc;
 
-use crate::protocol::StealthStreamMessage;
 use crate::errors::Error;
+use crate::protocol::StealthStreamMessage;
 use crate::Client;
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
@@ -151,7 +151,7 @@ impl Server {
 	async fn poke_task(client: Arc<Client>, delay: u64) -> ServerResult<()> {
 		while client.is_connected() {
 			client.send(StealthStreamMessage::Poke).await?;
-			debug!("Poking connection for {:?}", client.address());
+			debug!("Poking connection for {:?}", client.peer_address());
 			tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
 		}
 		Ok(())
@@ -166,13 +166,14 @@ impl Server {
 					let result = read_client.recieve().await;
 					match result {
 						Ok(message) => {
-							if let StealthStreamMessage::Goodbye(reason) = &message {
+							if let StealthStreamMessage::Goodbye { reason, code } = &message {
 								read_client.socket().close().await;
 								read_client.set_connection_state(false);
 								info!(
-									"Recieved goodbye message from {:?} citing reason: {:?}",
-									read_client.address(),
-									reason
+									"Recieved goodbye message from {:?}. Code: {:?} | Reason: {:?}",
+									read_client.peer_address(),
+									code,
+									reason,
 								);
 							}
 

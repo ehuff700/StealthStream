@@ -10,35 +10,51 @@ use anyhow::anyhow;
 use tokio::{net::TcpStream, signal};
 use tracing::error;
 
-use crate::{errors::ClientErrors, GoodbyeCodes, StealthStreamResult};
+use crate::{errors::ClientErrors, StealthStreamResult, GRACEFUL};
 
 use super::{StealthStream, StealthStreamMessage};
 
 pub type ClientResult<T> = std::result::Result<T, ClientErrors>;
 
 #[derive(Debug, Clone)]
+/// Used to store the address context of a [SocketAddr]
+pub enum AddressContext {
+	/// Represents an address of the server when used on the client side.
+	ServerAddress(SocketAddr),
+	/// Represents the address of the client as seen from the server side.
+	ClientAddress(SocketAddr),
+}
+
+#[derive(Debug, Clone)]
+/// Client object used to connect to a StealthStream server.
 pub struct Client {
+	/// A handle to the underlying socket, wrapped in a [StealthStream] struct.
 	raw_socket: StealthStream,
+	/// An atomic boolean used to track the client's connection state.
 	connection_state: Arc<AtomicBool>,
-	address: SocketAddr,
+	/// The address context of the remote peer.
+	///
+	/// This value will be [AddressContext::ClientAddress] when viewed server side and [AddressContext::ServerAddress] when viewed client side.
+	peer_address: AddressContext,
 }
 
 impl Client {
-	/// Connects to a stealth stream server at the given address
+	/// Connects to a StealthStream server at the given address
 	pub async fn connect<A>(addr: A) -> ClientResult<Self>
 	where
 		A: ToSocketAddrs,
 	{
 		let address = addr.to_socket_addrs()?.next().unwrap(); // TODO: fix this
-		let raw_socket = StealthStream::from_tcp_stream(TcpStream::connect(address).await?); // TODO: Make Error Type
+		let raw_socket = StealthStream::from_tcp_stream(TcpStream::connect(address).await?);
 		let connection_state = Arc::new(AtomicBool::new(true));
 
 		let client = Self {
 			raw_socket,
 			connection_state,
-			address,
+			peer_address: AddressContext::ServerAddress(address),
 		};
 
+		// Setup a ctrl + c listener to gracefully close the connection.
 		tokio::task::spawn({
 			let cloned = client.clone();
 			async move {
@@ -50,18 +66,6 @@ impl Client {
 		});
 
 		Ok(client)
-	}
-
-	/// This is used by the server to create a new client. Should not be used in client side code.
-	pub fn from_stream(socket: TcpStream, address: SocketAddr) -> Self {
-		let connection_state = Arc::new(AtomicBool::new(true));
-		let raw_socket = StealthStream::from_tcp_stream(socket);
-
-		Self {
-			raw_socket,
-			address,
-			connection_state,
-		}
 	}
 
 	/// Sends a message to/from the client to the stream.
@@ -88,10 +92,22 @@ impl Client {
 	///
 	/// This method will additionally close the underlying socket, preventing any messages from being sent.
 	pub async fn disconnect(&self) -> ClientResult<()> {
-		self.send(StealthStreamMessage::Goodbye(GoodbyeCodes::Graceful)).await?;
+		self.send(StealthStreamMessage::create_goodbye(GRACEFUL)).await?;
 		self.raw_socket.close().await;
 		self.connection_state.store(false, Ordering::SeqCst);
 		Ok(())
+	}
+
+	/// This is used by the server to create a new client. Should not be used in client side code.
+	pub(crate) fn from_stream(socket: TcpStream, address: SocketAddr) -> Self {
+		let connection_state = Arc::new(AtomicBool::new(true));
+		let raw_socket = StealthStream::from_tcp_stream(socket);
+
+		Self {
+			raw_socket,
+			peer_address: AddressContext::ClientAddress(address),
+			connection_state,
+		}
 	}
 
 	/* Getters */
@@ -99,8 +115,8 @@ impl Client {
 		&self.raw_socket
 	}
 
-	pub fn address(&self) -> SocketAddr {
-		self.address
+	pub fn peer_address(&self) -> &AddressContext {
+		&self.peer_address
 	}
 
 	pub fn is_connected(&self) -> bool {

@@ -1,3 +1,5 @@
+use std::io::Read;
+
 use crate::errors::Error;
 
 /* Opcode Consts */
@@ -59,10 +61,10 @@ impl GoodbyeCodes {
 
 #[derive(Debug, PartialEq)]
 pub enum StealthStreamMessage {
-	Handshake,             // 0x0
-	Poke,                  // 0x1
-	Message(String),       // 0x2
-	Goodbye(GoodbyeCodes), // 0x3
+	Handshake,                                              // 0x0
+	Poke,                                                   // 0x1
+	Message(String),                                        // 0x2
+	Goodbye { code: GoodbyeCodes, reason: Option<String> }, // 0x3
 }
 
 impl StealthStreamMessage {
@@ -74,7 +76,7 @@ impl StealthStreamMessage {
 			StealthStreamMessage::Handshake => HANDSHAKE_OPCODE,
 			StealthStreamMessage::Poke => POKE_OPCODE,
 			StealthStreamMessage::Message(_) => MESSAGE_OPCODE,
-			StealthStreamMessage::Goodbye(_) => GOODBYE_OPCODE,
+			StealthStreamMessage::Goodbye { .. } => GOODBYE_OPCODE,
 		}
 	}
 
@@ -87,7 +89,7 @@ impl StealthStreamMessage {
 			HANDSHAKE_OPCODE => Ok(StealthStreamMessage::Handshake),
 			POKE_OPCODE => Ok(StealthStreamMessage::Poke),
 			MESSAGE_OPCODE => Ok(StealthStreamMessage::Message(String::new())),
-			GOODBYE_OPCODE => Ok(StealthStreamMessage::Goodbye(GoodbyeCodes::Unknown)),
+			GOODBYE_OPCODE => Ok(Self::create_goodbye(GoodbyeCodes::Unknown)),
 			_ => Err(Error::InvalidOpcode(opcode)),
 		}
 	}
@@ -102,7 +104,14 @@ impl StealthStreamMessage {
 		// Serialize the message content based on type and calculate length
 		let content_bytes = match self {
 			StealthStreamMessage::Poke => Vec::new(),
-			StealthStreamMessage::Goodbye(reason) => reason.to_byte().to_vec(),
+			StealthStreamMessage::Goodbye { code, reason } => {
+				let mut code_bytes = code.to_byte().to_vec();
+				let mut reason_bytes = reason.as_ref().map_or_else(Vec::new, |v| v.as_bytes().to_vec());
+
+				code_bytes.append(&mut reason_bytes);
+				code_bytes
+			},
+
 			StealthStreamMessage::Message(text) => text.as_bytes().to_vec(),
 			_ => unreachable!(),
 		};
@@ -115,5 +124,48 @@ impl StealthStreamMessage {
 		message.extend_from_slice(&content_bytes);
 
 		message
+	}
+
+	/// Converts a raw message buffer into a `StealthStreamMessage`. This method is only applicable for MessageTypes that have extra data,
+	/// such as Goodbye and Message.
+	pub fn from_message(self, mut message_buffer: &[u8]) -> Result<Self, Error> {
+		match self {
+			StealthStreamMessage::Message(_) => Ok(StealthStreamMessage::Message(
+				String::from_utf8(message_buffer.to_vec()).unwrap(),
+			)),
+			StealthStreamMessage::Goodbye { .. } => {
+				let mut goodbye_code = [0u8; 1];
+				message_buffer.read_exact(&mut goodbye_code)?;
+				let code = GoodbyeCodes::from(goodbye_code[0]);
+
+				let mut reason = vec![0u8; message_buffer.len()];
+				message_buffer.read_exact(&mut reason)?;
+
+				let message = if reason.is_empty() {
+					StealthStreamMessage::create_goodbye(code)
+				} else {
+					StealthStreamMessage::create_goodbye_with_reason(code, &String::from_utf8_lossy(&reason))
+				};
+
+				Ok(message)
+			},
+			_ => Ok(self),
+		}
+	}
+
+	/// Utility function to create a [StealthStreamMessage::Goodbye] message without a reason.
+	pub fn create_goodbye(code: impl Into<GoodbyeCodes>) -> Self {
+		StealthStreamMessage::Goodbye {
+			code: code.into(),
+			reason: None,
+		}
+	}
+
+	/// Utility function to create a [StealthStreamMessage::Goodbye] message with a reason
+	pub fn create_goodbye_with_reason(code: impl Into<GoodbyeCodes>, reason: &str) -> Self {
+		StealthStreamMessage::Goodbye {
+			code: code.into(),
+			reason: Some(reason.to_string()),
+		}
 	}
 }
