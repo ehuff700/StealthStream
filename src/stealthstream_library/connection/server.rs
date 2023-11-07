@@ -1,12 +1,12 @@
 use std::collections::HashMap;
 use std::future::Future;
-use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::pin::Pin;
 use std::sync::Arc;
 
 use crate::connection::Client;
 use crate::connection::StealthStreamMessage;
 use crate::errors::Error;
-use anyhow::anyhow;
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info};
@@ -14,64 +14,121 @@ use uuid::Uuid;
 
 pub type ServerResult<T> = std::result::Result<T, Error>;
 
-// TODO: implement builder pattern
-#[allow(dead_code)]
+/// Type alias used to indicate a pinned and boxed future.
+pub type BoxedCallbackFuture = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
+
+/// This trait is used by the [Server] and [Client] to handle incoming messages.
+pub trait MessageCallback:
+	Fn(StealthStreamMessage, Arc<Client>) -> BoxedCallbackFuture + Sync + Send + 'static
+{
+}
+
+impl<F> MessageCallback for F where
+	F: Fn(StealthStreamMessage, Arc<Client>) -> BoxedCallbackFuture + Sync + Send + 'static
+{
+}
+
+/// Utility Struct to build a [Server] as needed
 pub struct ServerBuilder {
+	/// The Ip Address to bind the server to.
 	address: IpAddr,
+	/// The port number to bind to
 	port: u16,
+	/// The delay between each [StealthStreamMessage::Poke] message in ms.
 	poke_delay: u64,
+	/// The event handler that will be invoked when a [StealthStreamMessage] is received
+	event_handler: Option<Arc<dyn MessageCallback>>,
+}
+
+impl ServerBuilder {
+	fn new() -> Self {
+		Self {
+			address: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+			port: 7007,
+			poke_delay: 5000,
+			event_handler: None,
+		}
+	}
+
+	/// Sets the ip address to bind the server to.
+	pub fn address(mut self, address: IpAddr) -> Self {
+		self.address = address;
+		self
+	}
+
+	/// Sets the port number to bind to
+	pub fn port(mut self, port: u16) -> Self {
+		self.port = port;
+		self
+	}
+
+	/// Determines the delay between each iteration of the [StealthStreamMessage::Poke] task, in ms.
+	pub fn set_poke_delay(mut self, poke_delay: u64) -> Self {
+		self.poke_delay = poke_delay;
+		self
+	}
+
+	/// Uses the provided event handler to handle [StealthStreamMessage]s.
+	pub fn with_event_handler(mut self, event_handler: impl MessageCallback) -> Self {
+		self.event_handler = Some(Arc::new(event_handler));
+		self
+	}
+
+	pub async fn build(self) -> ServerResult<Server> {
+		let address = SocketAddr::new(self.address, self.port);
+		let listener = TcpListener::bind(address).await?;
+		let event_handler = self.event_handler.unwrap_or_else(|| Self::default_event_handler());
+
+		info!("StealthStream server listening on {}", address);
+		Ok(Server {
+			listener,
+			address: SocketAddr::new(self.address, self.port),
+			poke_delay: self.poke_delay,
+			clients: HashMap::new(),
+			event_handler,
+		})
+	}
+
+	fn default_event_handler() -> Arc<dyn MessageCallback> {
+		let handler = |message: StealthStreamMessage, _: Arc<Client>| {
+			debug!("Received message: {:?}", message);
+			Box::pin(async move {}) as BoxedCallbackFuture
+		};
+		Arc::new(handler)
+	}
+}
+
+impl Default for ServerBuilder {
+	fn default() -> Self {
+		Self::new()
+	}
 }
 
 pub struct Server {
 	listener: TcpListener,
 	address: SocketAddr,
+	poke_delay: u64,
 	#[allow(dead_code)]
 	clients: HashMap<Uuid, Client>, // TODO: implement this
+	event_handler: Arc<dyn MessageCallback>,
 }
 
 impl Server {
-	/// Binds the server to the given socket address.
-	pub async fn bind<T>(addr: T) -> ServerResult<Self>
-	where
-		T: ToSocketAddrs,
-	{
-		let address = addr
-			.to_socket_addrs()?
-			.next()
-			.ok_or(Error::ServerError(anyhow!("Invalid SocketAddress provided").into()))?;
-
-		let listener = TcpListener::bind(address).await?;
-		info!("StealthStream server listening on {}", address);
-
-		Ok(Server {
-			address,
-			listener,
-			clients: HashMap::new(),
-		})
-	}
-
-	/// Listens for incoming connections.
+	/// Listens for incoming connections, blocking the current task.
 	///
 	/// On connection, the callback will be passed to a new tokio task. This task will be responsible for
 	/// reading the stream for the lifecycle of the connection and processing messages.
-	pub async fn listen<F, Fut>(&self, callback: F) -> ServerResult<()>
-	where
-		F: Fn(StealthStreamMessage, Arc<Client>) -> Fut + Send + Sync + 'static,
-		Fut: Future<Output = ()> + Send + 'static,
-	{
-		let arced_callback = Arc::new(callback);
-
+	pub async fn listen(&self) -> ServerResult<()> {
 		loop {
 			match self.listener.accept().await {
 				Ok((socket, addr)) => {
 					debug!("Accepted connection from {:?}", addr);
-					let cloned_callback = arced_callback.clone();
+
 					let client = Arc::new(Client::from_stream(socket, addr));
-					// TODO: insert client into hashmap
-					tokio::spawn(Self::handle_client(client, cloned_callback));
+					self.handle_client(client).await;
 				},
 				Err(e) => {
-					error!("Couldn't get client: {:?}", e);
+					error!("Error accepting connection: {:?}", e);
 					return Err(e.into());
 				},
 			}
@@ -79,24 +136,21 @@ impl Server {
 	}
 
 	/// Handles the client connection by looping over the socket.
-	async fn handle_client<F, Fut>(client: Arc<Client>, callback: Arc<F>)
-	where
-		F: Fn(StealthStreamMessage, Arc<Client>) -> Fut + Send + Sync + 'static,
-		Fut: Future<Output = ()> + Send + 'static,
-	{
-		tokio::task::spawn(Self::poke_task(client.clone()));
+	async fn handle_client(&self, client: Arc<Client>) {
+		let delay = self.poke_delay;
+		tokio::task::spawn(Self::poke_task(client.clone(), delay));
 
 		let (write_tx, write_rx) = mpsc::channel::<StealthStreamMessage>(32);
 		Self::spawn_read_task(&client, write_tx);
-		Self::spawn_write_task(&client, write_rx, callback);
+		self.spawn_write_task(&client, write_rx);
 	}
 
-	/// Pokes the client to keep the connection alive.
-	async fn poke_task(client: Arc<Client>) -> ServerResult<()> {
+	/// Pokes the client to keep the connection alive, according to the configured delay.
+	async fn poke_task(client: Arc<Client>, delay: u64) -> ServerResult<()> {
 		while client.is_connected() {
 			client.send(StealthStreamMessage::Poke).await?;
 			debug!("Poking connection for {:?}", client.address());
-			tokio::time::sleep(std::time::Duration::from_millis(5000)).await;
+			tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
 		}
 		Ok(())
 	}
@@ -135,17 +189,17 @@ impl Server {
 	}
 
 	/// Spawns a write task that will recieve messages from the mpsc channel and write them to the client.
-	fn spawn_write_task<F, Fut>(client: &Arc<Client>, mut rx: mpsc::Receiver<StealthStreamMessage>, callback_fn: Arc<F>)
-	where
-		F: Fn(StealthStreamMessage, Arc<Client>) -> Fut + Send + Sync + 'static,
-		Fut: Future<Output = ()> + Send + 'static,
-	{
+	fn spawn_write_task(&self, client: &Arc<Client>, mut rx: mpsc::Receiver<StealthStreamMessage>) {
 		tokio::task::spawn({
 			let write_client = client.clone();
+			let callback = self.event_handler.clone();
+
 			async move {
 				while write_client.is_connected() {
 					while let Some(message) = rx.recv().await {
-						tokio::task::spawn(callback_fn(message, write_client.clone()));
+						// The callback returns a future which we *must* await
+						// otherwise the code inside the callback will effectively be dead.
+						callback(message, write_client.clone()).await;
 					}
 				}
 			}
@@ -153,7 +207,7 @@ impl Server {
 	}
 
 	/* Getters */
-	pub fn addr(&self) -> SocketAddr {
+	pub fn address(&self) -> SocketAddr {
 		self.address
 	}
 }

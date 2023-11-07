@@ -115,25 +115,23 @@ impl Client {
 
 #[cfg(test)]
 mod tests {
-	use std::{future::Future, sync::Arc};
+	use std::sync::Arc;
 
 	use rand::Rng;
 
-	use crate::{Client, Server, StealthStreamMessage};
+	use crate::{Server, ServerBuilder, StealthStreamMessage};
 
-	async fn setup_server<F, Fut>(callback: F) -> Arc<Server>
-	where
-		F: Fn(StealthStreamMessage, Arc<Client>) -> Fut + Send + Sync + 'static,
-		Fut: Future<Output = ()> + Send + 'static,
-	{
+	async fn setup_server() -> Arc<Server> {
 		let mut rng = rand::thread_rng();
 		let random_number: u16 = rng.gen_range(1000..10000);
+		let server = ServerBuilder::default().port(random_number).build().await.unwrap();
 
-		let server = Arc::new(Server::bind(format!("127.0.0.1:{}", random_number)).await.unwrap());
+		let server = Arc::new(server);
+
 		tokio::task::spawn({
 			let task_server = server.clone();
 			async move {
-				task_server.listen(callback).await.unwrap();
+				task_server.listen().await.unwrap();
 			}
 		});
 
@@ -142,8 +140,8 @@ mod tests {
 
 	#[tokio::test]
 	async fn test_disconnect() {
-		let server = setup_server(|_, _| async {}).await;
-		let client = super::Client::connect(server.addr()).await.unwrap();
+		let server = setup_server().await;
+		let client = super::Client::connect(server.address()).await.unwrap();
 
 		assert!(client.is_connected());
 		client.disconnect().await.unwrap();
@@ -159,13 +157,9 @@ mod tests {
 	// TODO: refactor this test to server
 	#[tokio::test]
 	async fn test_basic_send_recv() {
-		let server = setup_server(|message, _| async move {
-			println!("Received message: {:?}", message);
-			assert_eq!(message, StealthStreamMessage::Message("Tes1".to_string()));
-		})
-		.await;
+		let server = setup_server().await;
 
-		let client = super::Client::connect(server.addr()).await.unwrap();
+		let client = super::Client::connect(server.address()).await.unwrap();
 
 		let message = super::StealthStreamMessage::Message("Test".to_string());
 		client.send(message).await.unwrap();

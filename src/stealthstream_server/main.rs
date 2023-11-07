@@ -1,6 +1,9 @@
 use std::sync::Arc;
 
-use stealthstream_library::connection::{Client, Server, StealthStreamMessage};
+use stealthstream_library::{
+	connection::{Client, StealthStreamMessage},
+	ServerBuilder,
+};
 use tracing::debug;
 use tracing_subscriber::filter::LevelFilter;
 
@@ -21,15 +24,16 @@ async fn callback_function(message_type: StealthStreamMessage, client: Arc<Clien
 async fn main() -> Result<()> {
 	tracing_subscriber::fmt().with_max_level(LevelFilter::DEBUG).init();
 
-	let server = Server::bind("127.0.0.1:7007").await?;
-
-	server
-		.listen(|message_type, client| {
-			Box::pin(async move {
+	let server = ServerBuilder::default()
+		.with_event_handler(|message_type, client| {
+			Box::pin(async {
 				callback_function(message_type, client).await;
 			})
 		})
+		.build()
 		.await?;
+
+	server.listen().await?;
 
 	Ok(())
 }
