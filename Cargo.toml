@@ -32,11 +32,3 @@ features = [
 [dependencies.uuid]
 version = "1.5.0"
 features = ["v4", "fast-rng"]
-
-[[bin]]
-name = 'stealthstream_server'
-path = "src/stealthstream_server/main.rs"
-
-[lib]
-name = "stealthstream_library"
-path = "src/stealthstream_library/lib.rs"

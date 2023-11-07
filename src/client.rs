@@ -12,7 +12,7 @@ use tracing::error;
 
 use crate::{errors::ClientErrors, GoodbyeCodes, StealthStreamResult};
 
-use super::{stream::StealthStream, StealthStreamMessage};
+use super::{StealthStream, StealthStreamMessage};
 
 pub type ClientResult<T> = std::result::Result<T, ClientErrors>;
 

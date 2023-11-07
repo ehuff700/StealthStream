@@ -4,9 +4,9 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::pin::Pin;
 use std::sync::Arc;
 
-use crate::connection::Client;
-use crate::connection::StealthStreamMessage;
+use crate::protocol::StealthStreamMessage;
 use crate::errors::Error;
+use crate::Client;
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info};
@@ -50,19 +50,21 @@ impl ServerBuilder {
 		}
 	}
 
-	/// Sets the ip address to bind the server to.
+	/// Sets the ip address to bind the server to (localhost loopback by default).
 	pub fn address(mut self, address: IpAddr) -> Self {
 		self.address = address;
 		self
 	}
 
-	/// Sets the port number to bind to
+	/// Sets the port number to bind to (7007 by default).
 	pub fn port(mut self, port: u16) -> Self {
 		self.port = port;
 		self
 	}
 
 	/// Determines the delay between each iteration of the [StealthStreamMessage::Poke] task, in ms.
+	///
+	/// 5000 ms by default.
 	pub fn set_poke_delay(mut self, poke_delay: u64) -> Self {
 		self.poke_delay = poke_delay;
 		self
@@ -116,7 +118,7 @@ pub struct Server {
 impl Server {
 	/// Listens for incoming connections, blocking the current task.
 	///
-	/// On connection, the callback will be passed to a new tokio task. This task will be responsible for
+	/// On connection, client will be created from the [tokio::net::TcpStream] and [SocketAddr]. This task will be responsible for
 	/// reading the stream for the lifecycle of the connection and processing messages.
 	pub async fn listen(&self) -> ServerResult<()> {
 		loop {
@@ -135,7 +137,7 @@ impl Server {
 		}
 	}
 
-	/// Handles the client connection by looping over the socket.
+	/// Spawns a new read/write task for the provided client, as well as creating a poke task to keep the connection alive.
 	async fn handle_client(&self, client: Arc<Client>) {
 		let delay = self.poke_delay;
 		tokio::task::spawn(Self::poke_task(client.clone(), delay));
