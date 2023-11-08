@@ -2,7 +2,10 @@ use std::{sync::Arc, time::Duration};
 
 use tracing::debug;
 
-use crate::{protocol::StealthStreamMessage, server::MessageCallback};
+use crate::{
+	protocol::StealthStreamMessage,
+	server::{BoxedCallbackFuture, MessageCallback},
+};
 
 use super::{Client, RawClient};
 
@@ -18,7 +21,7 @@ pub struct ClientBuilder {
 	/// The maximum number of reconnect attempts. If this parameter is not specified, a maximum of 10 attempts will be attempted.
 	///
 	/// None by default.
-	pub(crate) reconnect_attempts: Option<u32>,
+	pub(crate) reconnect_attempts: u32,
 
 	/// Event handler for when a message is received from the server. If this parameter is not specified,
 	/// A default event handler which simply logs the message will be used.
@@ -30,7 +33,7 @@ impl ClientBuilder {
 		Self {
 			should_reconnect: false,
 			reconnect_interval: None, // TODO: implement exponential backoff
-			reconnect_attempts: Some(10),
+			reconnect_attempts: 10,
 			event_handler: Self::default_event_handler(),
 		}
 	}
@@ -49,7 +52,7 @@ impl ClientBuilder {
 
 	/// Sets the maximum number of reconnection attempts.
 	pub fn reconnect_attempts(&mut self, attempts: u32) -> &mut Self {
-		self.reconnect_attempts = Some(attempts);
+		self.reconnect_attempts = attempts;
 		self
 	}
 
@@ -59,17 +62,21 @@ impl ClientBuilder {
 		self
 	}
 
+	// TODO: implement on close/error? Or leave that up to the implementation?
+
 	pub fn build(self) -> Client {
-		let client: Client = self.into();
-		client
+		self.into()
 	}
 
+	/// Default event handler which simply logs the message.
 	fn default_event_handler() -> Arc<dyn MessageCallback> {
-		Arc::new(|message: StealthStreamMessage, _: Arc<RawClient>| {
+		let handler = |message: StealthStreamMessage, _: Arc<RawClient>| {
 			Box::pin(async move {
-				debug!("Received message from server: {:?}", message);
-			})
-		})
+				// Async code can be run in here if needed
+				debug!("Received message: {:?}", message);
+			}) as BoxedCallbackFuture
+		};
+		Arc::new(handler)
 	}
 }
 

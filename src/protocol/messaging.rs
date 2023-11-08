@@ -4,7 +4,7 @@ use uuid::Uuid;
 
 use crate::errors::{Error, ServerErrors};
 
-use super::Handshake;
+use super::{Handshake, StealthStreamPacket};
 
 /* Opcode Consts */
 pub(crate) const HANDSHAKE_OPCODE: u8 = 0x0;
@@ -39,15 +39,9 @@ impl StealthStreamMessage {
 		}
 	}
 
-	/// Formats a [StealthStreamMessage] into a raw [Vec<u8>] used to send over the wire.
-	pub fn to_message(&self) -> Vec<u8> {
-		let mut message = Vec::new();
-
-		// Add the opcode byte to the message
-		message.push(self.opcode());
-
-		// Serialize the message content based on type and calculate length
-		let content_bytes = match self {
+	/// Serializes the message content into bytes.
+	pub fn serialize_content_bytes(&self) -> Vec<u8> {
+		match self {
 			StealthStreamMessage::Goodbye { code, reason } => {
 				let mut code_bytes = code.to_byte().to_vec();
 				let mut reason_bytes = reason.as_ref().map_or_else(Vec::new, |v| v.as_bytes().to_vec());
@@ -64,23 +58,17 @@ impl StealthStreamMessage {
 				handshake
 			},
 			_ => Vec::new(),
-		};
-
-		// Add the length bytes to the message, using two bytes (16 bits) in big-endian format
-		let length = content_bytes.len() as u16;
-		message.extend_from_slice(&length.to_be_bytes()); // Length prefix
-
-		// Add the actual message content
-		message.extend_from_slice(&content_bytes);
-
-		message
+		}
 	}
 
 	/// Converts a raw message buffer into a `StealthStreamMessage`.
 	///
 	/// This method handles the deserialization of messages with extra content, such as Message, Goodbye, Handshake, etc.
 	/// If the provided opcode byte was not valid, this method will return an [Error::InvalidOpcode] error.
-	pub fn from_message(opcode_byte: u8, mut message_buffer: &[u8]) -> Result<Self, Error> {
+	pub fn from_message(packet: &StealthStreamPacket) -> Result<Self, Error> {
+		let mut message_buffer = packet.content();
+		let opcode_byte = packet.opcode();
+
 		match opcode_byte {
 			HANDSHAKE_OPCODE => {
 				let handshake = Handshake::parse_handshake(message_buffer).map_err(ServerErrors::from)?;

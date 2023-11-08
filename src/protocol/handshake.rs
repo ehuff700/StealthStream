@@ -25,7 +25,7 @@ pub struct Handshake {
 
 impl Handshake {
 	pub async fn start_server_handshake(client: &Arc<RawClient>) -> ServerResult<()> {
-		let result = client.recieve().await;
+		let result = client.recieve().await; // TODO: implement timeout
 		match result {
 			Ok(StealthStreamMessage::Handshake { version, .. }) => {
 				debug!("Received version {} handshake from {:?}", version, client.peer_address());

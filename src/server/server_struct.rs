@@ -1,15 +1,13 @@
-use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
 use crate::{
-	client::{Client, RawClient},
+	client::RawClient,
 	protocol::{Handshake, StealthStreamMessage, INVALID_HANDSHAKE},
 };
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info};
-use uuid::Uuid;
 
 use super::{MessageCallback, ServerResult};
 
@@ -17,8 +15,6 @@ pub struct Server {
 	listener: TcpListener,
 	address: SocketAddr,
 	poke_delay: u64,
-	#[allow(dead_code)]
-	clients: HashMap<Uuid, Client>, // TODO: implement this
 	event_handler: Arc<dyn MessageCallback>,
 }
 
@@ -31,7 +27,6 @@ impl Server {
 			listener,
 			address,
 			poke_delay,
-			clients: HashMap::new(),
 			event_handler,
 		}
 	}

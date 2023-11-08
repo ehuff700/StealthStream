@@ -1,7 +1,7 @@
 use std::{io, sync::Arc};
 
 use tokio::{
-	io::{AsyncReadExt, AsyncWriteExt},
+	io::AsyncWriteExt,
 	net::{
 		tcp::{OwnedReadHalf, OwnedWriteHalf},
 		TcpStream,
@@ -11,6 +11,8 @@ use tokio::{
 use tracing::{debug, trace};
 
 use crate::{protocol::StealthStreamMessage, StealthStreamResult};
+
+use super::StealthStreamPacket;
 
 #[derive(Debug, Clone)]
 pub struct StealthStream {
@@ -29,11 +31,12 @@ impl StealthStream {
 	}
 
 	/// Writes arbitrary data to the underlying stream.
-	pub async fn write(&self, data: &[u8]) -> io::Result<()> {
+	pub async fn write(&self, data: StealthStreamPacket) -> io::Result<()> {
 		let mut writer = self.write_half.lock().await;
 		writer.writable().await?;
+		let content: Vec<u8> = data.into();
 
-		let write_result = match writer.try_write(data) {
+		let write_result = match writer.try_write(&content) {
 			Ok(n) => {
 				trace!("Wrote {} bytes to the stream", n);
 				writer.flush().await?;
@@ -53,25 +56,11 @@ impl StealthStream {
 	pub async fn read(&self) -> StealthStreamResult<StealthStreamMessage> {
 		let mut reader = self.read_half.write().await;
 		reader.readable().await?;
-
-		// Read the singular opco byte to determine which message this is.
-		let mut opcode_buffer = [0u8; 1];
-		reader.read_exact(&mut opcode_buffer).await?;
-		let opcode = opcode_buffer[0];
-
-		// Read the length buffer to find the length of the message
-		let mut length_buffer = [0u8; 2];
-		reader.read_exact(&mut length_buffer).await?;
-		let length = u16::from_be_bytes(length_buffer);
-
-		// Finally, use the length buffer to read the actual message content
-		let mut message_buffer = vec![0u8; length as usize];
-		reader.read_exact(&mut message_buffer).await?;
-
+		let packet = StealthStreamPacket::from_stream(&mut *reader).await;
 		drop(reader);
 
 		// Return the proper message type with custom message processing applied.
-		StealthStreamMessage::from_message(opcode, &message_buffer)
+		StealthStreamMessage::from_message(&packet.unwrap()) // TODO: fix this
 	}
 
 	/// Shuts down the underlying stream.

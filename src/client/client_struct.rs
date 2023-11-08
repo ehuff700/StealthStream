@@ -33,6 +33,7 @@ pub enum AddressContext {
 }
 
 #[derive(Debug, Clone)]
+/// The raw client used both in server and client mode.
 pub struct RawClient {
 	/// A handle to the underlying socket, wrapped in a [StealthStream] struct.
 	raw_socket: StealthStream,
@@ -71,8 +72,7 @@ impl RawClient {
 
 	/// Sends a message to/from the client to the stream.
 	pub async fn send(&self, message: StealthStreamMessage) -> ClientResult<()> {
-		let raw_message = message.to_message();
-		self.raw_socket.write(&raw_message).await.map_err(ClientErrors::from)
+		self.raw_socket.write(message.into()).await.map_err(ClientErrors::from)
 	}
 
 	/// Gracefully disconnects the client from the server by sending a [StealthStreamMessage::Goodbye] message as well as updating the connection state.
@@ -115,7 +115,7 @@ impl RawClient {
 
 #[derive(Clone)]
 #[allow(dead_code)] // TODO: implement reconnect
-/// Client object used to connect to a StealthStream server.
+/// Client object wrapping a RawClient, typically used in client side code.
 pub struct Client {
 	inner: Option<Arc<RawClient>>,
 	/// Whether or not the client should attempt to reconnect when disconnected.
@@ -123,7 +123,7 @@ pub struct Client {
 	/// The interval of time between reconnect attempts. If this parameter is not specified, an exponential backoff will be attempted.
 	reconnect_interval: Option<Duration>,
 	/// The maximum number of reconnect attempts. If this parameter is not specified, a maximum of 10 attempts will be attempted.
-	reconnect_attempts: Option<u32>,
+	reconnect_attempts: u32,
 	/// The unique identifier of the session, provided by the server after a successful handshake.
 	/// This will be None if this is the client's first connection.
 	pub(crate) session_id: Option<Uuid>,
@@ -163,21 +163,27 @@ impl Client {
 		self.inner()?.send(message).await
 	}
 
-	/// Begins a listening loop for incoming messages.
+	/// Spawns a new tokio task which listens for incoming messages.
 	///
 	/// This function will block until an error occurrs or the client is disconnected.
 	pub async fn listen(&self) -> StealthStreamResult<()> {
 		let inner = self.inner()?;
-
-		while self.is_connected() {
-			match inner.recieve().await {
-				Ok(message) => {
-					let callback = &self.event_handler;
-					callback(message, inner.clone()).await;
-				},
-				Err(e) => return Err(e),
+		tokio::task::spawn({
+			let cloned = inner.clone();
+			let callback = self.event_handler.clone();
+			async move {
+				while cloned.is_connected() {
+					match cloned.recieve().await {
+						Ok(message) => {
+							callback(message, cloned.clone()).await;
+						},
+						Err(e) => return Err(e),
+					}
+				}
+				Ok(())
 			}
-		}
+		});
+
 		Ok(())
 	}
 
