@@ -2,9 +2,9 @@ use std::io::Read;
 
 use uuid::Uuid;
 
-use crate::errors::Error;
+use crate::errors::{Error, ServerErrors};
 
-pub(crate) const SUPPORTED_VERSIONS: [u8; 1] = [1];
+use super::Handshake;
 
 /* Opcode Consts */
 pub(crate) const HANDSHAKE_OPCODE: u8 = 0x0;
@@ -57,6 +57,12 @@ impl StealthStreamMessage {
 			},
 
 			StealthStreamMessage::Message(text) => text.as_bytes().to_vec(),
+			StealthStreamMessage::Handshake { version, session_id } => {
+				let mut handshake = vec![*version];
+				let mut session_id = session_id.as_ref().map_or_else(Vec::new, |v| v.as_bytes().to_vec());
+				handshake.append(&mut session_id);
+				handshake
+			},
 			_ => Vec::new(),
 		};
 
@@ -77,20 +83,8 @@ impl StealthStreamMessage {
 	pub fn from_message(opcode_byte: u8, mut message_buffer: &[u8]) -> Result<Self, Error> {
 		match opcode_byte {
 			HANDSHAKE_OPCODE => {
-				let mut session_id: Option<Uuid> = None;
-
-				let mut version_buffer = [0u8; 1];
-				message_buffer.read_exact(&mut version_buffer)?;
-				let version = version_buffer[0];
-
-				let mut session_id_buffer = [0u8; 16];
-				message_buffer.read_exact(&mut session_id_buffer)?;
-
-				if !session_id_buffer.is_empty() {
-					session_id = Some(Uuid::from_bytes(session_id_buffer));
-				}
-
-				Ok(StealthStreamMessage::Handshake { version, session_id })
+				let handshake = Handshake::parse_handshake(message_buffer).map_err(ServerErrors::from)?;
+				Ok(handshake.into())
 			},
 			MESSAGE_OPCODE => Ok(StealthStreamMessage::Message(
 				String::from_utf8(message_buffer.to_vec()).unwrap(),

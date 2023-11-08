@@ -62,9 +62,9 @@ impl StealthStream {
 		// Read the length buffer to find the length of the message
 		let mut length_buffer = [0u8; 2];
 		reader.read_exact(&mut length_buffer).await?;
+		let length = u16::from_be_bytes(length_buffer);
 
 		// Finally, use the length buffer to read the actual message content
-		let length = u16::from_be_bytes(length_buffer);
 		let mut message_buffer = vec![0u8; length as usize];
 		reader.read_exact(&mut message_buffer).await?;
 

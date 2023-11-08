@@ -1,7 +1,8 @@
-use std::{fmt::Display, string::FromUtf8Error};
-use uuid::Uuid;
+use std::string::FromUtf8Error;
 
 use thiserror::Error;
+
+use crate::protocol::HandshakeErrors;
 
 /// Error type for the StealthStream library.
 #[derive(Debug, Error)]
@@ -36,21 +37,4 @@ pub enum ServerErrors {
 	InvalidHandshake(#[from] HandshakeErrors),
 	#[error("Server Error Occurred: {0}")]
 	ServerError(#[from] anyhow::Error),
-}
-
-#[derive(Debug, Error)]
-pub enum HandshakeErrors {
-	InvalidSessionId(Uuid),
-	UnsupportedVersion(u8),
-	SkippedHandshake,
-}
-
-impl Display for HandshakeErrors {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		match self {
-			HandshakeErrors::InvalidSessionId(uuid) => write!(f, "Invalid Session ID: {}", uuid),
-			HandshakeErrors::UnsupportedVersion(version) => write!(f, "Unsupported Version: {}", version),
-			HandshakeErrors::SkippedHandshake => write!(f, "Client attempted to skip handshake"),
-		}
-	}
 }

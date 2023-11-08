@@ -4,8 +4,7 @@ use std::sync::Arc;
 
 use crate::{
 	client::{Client, RawClient},
-	errors::{HandshakeErrors, ServerErrors},
-	protocol::{StealthStreamMessage, INVALID_HANDSHAKE, SUPPORTED_VERSIONS},
+	protocol::{Handshake, StealthStreamMessage, INVALID_HANDSHAKE},
 };
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
@@ -57,37 +56,9 @@ impl Server {
 		}
 	}
 
-	/// Utility function that validates a [StealthStreamMessage::Handshake] message.
-	fn validate_handshake(version: u8, session_id: Option<Uuid>) -> Result<(), HandshakeErrors> {
-		if !SUPPORTED_VERSIONS.contains(&version) {
-			return Err(HandshakeErrors::UnsupportedVersion(version));
-		}
-
-		if let Some(session_id) = session_id {
-			if session_id.is_nil() || session_id.get_version_num() != 4 {
-				return Err(HandshakeErrors::InvalidSessionId(session_id));
-			}
-		}
-
-		Ok(())
-	}
-
-	async fn inititalize_handshake(&self, client: &Arc<RawClient>) -> ServerResult<()> {
-		if let StealthStreamMessage::Handshake { version, session_id } = client.recieve().await? {
-			debug!("Received version {} handshake from {:?}", version, client.peer_address());
-			Self::validate_handshake(version, session_id).map_err(ServerErrors::from)?;
-
-			// TODO: do something with session_id
-			info!("Upgraded connection to StealthStream for client {:?}", client.peer_address());
-			Ok(())
-		} else {
-			Err(ServerErrors::InvalidHandshake(HandshakeErrors::SkippedHandshake))?
-		}
-	}
-
 	/// Spawns a new read/write task for the provided client, as well as creating a poke task to keep the connection alive.
 	async fn handle_client(&self, client: Arc<RawClient>) {
-		let handshake_result = self.inititalize_handshake(&client).await;
+		let handshake_result = Handshake::start_server_handshake(&client).await;
 
 		if let Err(e) = handshake_result {
 			error!("Error handshaking for client: {:?}", e);

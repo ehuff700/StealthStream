@@ -10,10 +10,11 @@ use std::{
 use anyhow::anyhow;
 use tokio::{net::TcpStream, signal};
 use tracing::error;
+use uuid::Uuid;
 
 use crate::{
 	errors::ClientErrors,
-	protocol::{GoodbyeCodes, StealthStream, StealthStreamMessage, GRACEFUL},
+	protocol::{GoodbyeCodes, Handshake, StealthStream, StealthStreamMessage, GRACEFUL},
 	server::MessageCallback,
 	StealthStreamResult,
 };
@@ -56,7 +57,7 @@ impl RawClient {
 		})
 	}
 
-	/// This is used by the server to create a new raw client. Should not be used in client side code.
+	/// Creates a new [RawClient] from a [tokio::net::TcpStream] and [SocketAddr].
 	pub(crate) fn from_stream(socket: TcpStream, address: SocketAddr) -> Self {
 		let connection_state = Arc::new(AtomicBool::new(true));
 		let raw_socket = socket.into();
@@ -123,7 +124,10 @@ pub struct Client {
 	reconnect_interval: Option<Duration>,
 	/// The maximum number of reconnect attempts. If this parameter is not specified, a maximum of 10 attempts will be attempted.
 	reconnect_attempts: Option<u32>,
-
+	/// The unique identifier of the session, provided by the server after a successful handshake.
+	/// This will be None if this is the client's first connection.
+	pub(crate) session_id: Option<Uuid>,
+	/// Custom event handler defined by the client for use in recieving messages from the server.
 	event_handler: Arc<dyn MessageCallback>,
 }
 
@@ -137,6 +141,8 @@ impl Client {
 		let peer_address = AddressContext::ServerAddress(address);
 		let inner = RawClient::new(address, peer_address).await?;
 		self.inner = Some(Arc::new(inner));
+
+		Handshake::start_client_handshake(self).await?;
 
 		// Setup a ctrl + c listener to gracefully close the connection.
 		tokio::task::spawn({
@@ -212,6 +218,7 @@ impl From<ClientBuilder> for Client {
 	fn from(value: ClientBuilder) -> Self {
 		Self {
 			inner: None,
+			session_id: None,
 			should_reconnect: value.should_reconnect,
 			reconnect_interval: value.reconnect_interval,
 			reconnect_attempts: value.reconnect_attempts,
