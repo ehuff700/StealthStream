@@ -20,7 +20,7 @@ pub struct StealthStream {
 
 impl StealthStream {
 	/// Converts a [TcpStream] into a [StealthStream].
-	pub fn from_tcp_stream(stream: TcpStream) -> Self {
+	fn from_tcp_stream(stream: TcpStream) -> Self {
 		let (read_half, write_half) = stream.into_split();
 		Self {
 			write_half: Arc::new(Mutex::new(write_half)),
@@ -73,7 +73,7 @@ impl StealthStream {
 		// Return the proper message type with custom message processing applied.
 		StealthStreamMessage::from_message(opcode, &message_buffer)
 	}
-	
+
 	/// Shuts down the underlying stream.
 	pub async fn close(&self) {
 		let mut write_half = self.write_half.lock().await;
@@ -87,5 +87,11 @@ impl StealthStream {
 
 	pub fn reader(&self) -> &Arc<RwLock<OwnedReadHalf>> {
 		&self.read_half
+	}
+}
+
+impl From<TcpStream> for StealthStream {
+	fn from(stream: TcpStream) -> Self {
+		Self::from_tcp_stream(stream)
 	}
 }

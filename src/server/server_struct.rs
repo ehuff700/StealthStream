@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use crate::{
-	client::Client,
+	client::{Client, RawClient},
 	errors::{HandshakeErrors, ServerErrors},
 	protocol::{StealthStreamMessage, INVALID_HANDSHAKE, SUPPORTED_VERSIONS},
 };
@@ -46,7 +46,7 @@ impl Server {
 				Ok((socket, addr)) => {
 					debug!("Accepted connection from {:?}", addr);
 
-					let client = Arc::new(Client::from_stream(socket, addr));
+					let client = Arc::new(RawClient::from_stream(socket, addr));
 					self.handle_client(client).await;
 				},
 				Err(e) => {
@@ -72,7 +72,7 @@ impl Server {
 		Ok(())
 	}
 
-	async fn inititalize_handshake(&self, client: &Arc<Client>) -> ServerResult<()> {
+	async fn inititalize_handshake(&self, client: &Arc<RawClient>) -> ServerResult<()> {
 		if let StealthStreamMessage::Handshake { version, session_id } = client.recieve().await? {
 			debug!("Received version {} handshake from {:?}", version, client.peer_address());
 			Self::validate_handshake(version, session_id).map_err(ServerErrors::from)?;
@@ -86,7 +86,7 @@ impl Server {
 	}
 
 	/// Spawns a new read/write task for the provided client, as well as creating a poke task to keep the connection alive.
-	async fn handle_client(&self, client: Arc<Client>) {
+	async fn handle_client(&self, client: Arc<RawClient>) {
 		let handshake_result = self.inititalize_handshake(&client).await;
 
 		if let Err(e) = handshake_result {
@@ -107,7 +107,7 @@ impl Server {
 	}
 
 	/// Pokes the client to keep the connection alive, according to the configured delay.
-	async fn poke_task(client: Arc<Client>, delay: u64) -> ServerResult<()> {
+	async fn poke_task(client: Arc<RawClient>, delay: u64) -> ServerResult<()> {
 		while client.is_connected() {
 			client.send(StealthStreamMessage::Poke).await?;
 			debug!("Poking connection for {:?}", client.peer_address());
@@ -117,7 +117,7 @@ impl Server {
 	}
 
 	/// Spawns a read task that will read messages from the client and use the mpsc channel to send them to the write task.
-	fn spawn_read_task(client: &Arc<Client>, tx: mpsc::Sender<StealthStreamMessage>) {
+	fn spawn_read_task(client: &Arc<RawClient>, tx: mpsc::Sender<StealthStreamMessage>) {
 		tokio::task::spawn({
 			let read_client = client.clone();
 			async move {
@@ -151,7 +151,7 @@ impl Server {
 	}
 
 	/// Spawns a write task that will recieve messages from the mpsc channel and write them to the client.
-	fn spawn_write_task(&self, client: &Arc<Client>, mut rx: mpsc::Receiver<StealthStreamMessage>) {
+	fn spawn_write_task(&self, client: &Arc<RawClient>, mut rx: mpsc::Receiver<StealthStreamMessage>) {
 		tokio::task::spawn({
 			let write_client = client.clone();
 			let callback = self.event_handler.clone();

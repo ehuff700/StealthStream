@@ -6,7 +6,7 @@ use std::{
 use tokio::net::TcpListener;
 use tracing::{debug, info};
 
-use crate::{client::Client, protocol::StealthStreamMessage, server::BoxedCallbackFuture};
+use crate::{client::RawClient, protocol::StealthStreamMessage, server::BoxedCallbackFuture};
 
 use super::{server_struct::Server, MessageCallback, ServerResult};
 
@@ -73,7 +73,7 @@ impl ServerBuilder {
 	}
 
 	fn default_event_handler() -> Arc<dyn MessageCallback> {
-		let handler = |message: StealthStreamMessage, _: Arc<Client>| {
+		let handler = |message: StealthStreamMessage, _: Arc<RawClient>| {
 			debug!("Received message: {:?}", message);
 			Box::pin(async move {}) as BoxedCallbackFuture
 		};
