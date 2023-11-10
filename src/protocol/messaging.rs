@@ -50,7 +50,12 @@ impl StealthStreamMessage {
 				code_bytes
 			},
 
-			StealthStreamMessage::Message(text) => text.as_bytes().to_vec(),
+			StealthStreamMessage::Message(text) => {
+				let bytes = text.as_bytes();
+				let mut array = Vec::with_capacity(bytes.len());
+				array.extend(bytes);
+				array
+			},
 			StealthStreamMessage::Handshake { version, session_id } => {
 				let mut handshake = vec![*version];
 				let mut session_id = session_id.as_ref().map_or_else(Vec::new, |v| v.as_bytes().to_vec());

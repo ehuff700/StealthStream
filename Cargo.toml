@@ -5,7 +5,10 @@ edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [dev-dependencies]
+futures-util = "0.3.29"
+tokio-tungstenite = "0.20.1"
 rand = "0.8.5"
+criterion = { version = "0.5.1", features = ["async_tokio"] }
 
 [dependencies]
 anyhow = "1.0.75"
@@ -29,3 +32,15 @@ features = [
 [dependencies.uuid]
 version = "1.5.0"
 features = ["v4", "fast-rng"]
+
+[[bench]]
+name = "tungstenite_vs_stealthstream"
+harness = false
+
+[[example]]
+name = "client"
+path = "examples/client/src/main.rs"
+
+[[example]]
+name = "server"
+path = "examples/server/src/main.rs"
