@@ -1,5 +1,7 @@
+use std::time::Duration;
+
 use thiserror::Error;
-use tokio::io::AsyncReadExt;
+use tokio::{io::AsyncReadExt, time::timeout};
 
 use super::{
 	constants::{GOODBYE_OPCODE, HANDSHAKE_OPCODE, MESSAGE_OPCODE, POKE_OPCODE},
@@ -17,6 +19,10 @@ pub enum StealthStreamPacketErrors {
 	LengthPrefixMissing,
 	#[error("packet length out of bounds: {0}")]
 	LengthOutOfBounds(usize), // TODO: implement max length
+	#[error("message content read timed out, faulty length prefix?")]
+	ContentReadTimedOut,
+	#[error("error reading from the underlying stream: {0}")]
+	StreamError(#[from] std::io::Error),
 }
 
 #[derive(Debug)]
@@ -27,13 +33,23 @@ pub struct StealthStreamPacket {
 }
 
 impl StealthStreamPacket {
+	#[cfg(test)]
+	/// Used only internally for testing purposes.
+	pub(crate) fn new(opcode: u8, length: u16, content: Vec<u8>) -> Self {
+		Self {
+			opcode,
+			length,
+			content,
+		}
+	}
+
 	#[allow(clippy::needless_pass_by_ref_mut)]
 	pub async fn from_stream<T>(stream: &mut T) -> Result<StealthStreamPacket, Error>
 	where
 		T: AsyncReadExt + Unpin + Send + Sync,
 	{
-		let mut opcode_buffer = [0u8; 1];
-		let mut length_buffer = [0u8; 2];
+		let mut opcode_buffer = [0u8; 1]; // set a hard buffer of one byte for the opcode
+		let mut length_buffer = [0u8; 2]; // set a hard buffer of two bytes for the length prefix
 
 		// Read Opcode Byte
 		stream
@@ -43,11 +59,15 @@ impl StealthStreamPacket {
 
 		let opcode = opcode_buffer[0];
 
+		if !Self::is_opcode_valid(opcode) {
+			return Err(StealthStreamPacketErrors::InvalidOpcodeByte(opcode))?;
+		}
+
 		// Read Length Prefix
-		stream
-			.read_exact(&mut length_buffer)
+		timeout(Duration::from_millis(500), stream.read_exact(&mut length_buffer)) //TODO: make timeout configurable
 			.await
-			.map_err(|_| StealthStreamPacketErrors::LengthPrefixMissing)?;
+			.map_err(|_| StealthStreamPacketErrors::LengthPrefixMissing)?
+			.map_err(StealthStreamPacketErrors::StreamError)?;
 
 		let length = u16::from_be_bytes(length_buffer);
 
@@ -55,11 +75,10 @@ impl StealthStreamPacket {
 		// result.map_err(|_| StealthStreamPacketErrors::LengthOutOfBounds(length))?;
 
 		let mut message_buffer = vec![0u8; length as usize];
-		stream.read_exact(&mut message_buffer).await?;
-
-		if !Self::is_opcode_valid(opcode) {
-			return Err(StealthStreamPacketErrors::InvalidOpcodeByte(opcode))?;
-		}
+		timeout(Duration::from_millis(500), stream.read_exact(&mut message_buffer))
+			.await
+			.map_err(|_| StealthStreamPacketErrors::ContentReadTimedOut)?
+			.map_err(StealthStreamPacketErrors::StreamError)?;
 
 		let packet = StealthStreamPacket {
 			opcode,
@@ -116,5 +135,3 @@ impl From<StealthStreamMessage> for StealthStreamPacket {
 		}
 	}
 }
-
-pub trait PacketContent {}

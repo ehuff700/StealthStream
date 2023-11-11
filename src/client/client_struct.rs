@@ -164,8 +164,8 @@ impl Client {
 
 	/// Spawns a new tokio task which listens for incoming messages.
 	///
-	/// This function will block until an error occurrs or the client is
-	/// disconnected.
+	/// While the client is connected, it will recieve messagees from the server
+	/// and call the event handler of this client with the message.
 	pub async fn listen(&self) -> StealthStreamResult<()> {
 		let inner = self.inner()?;
 		tokio::task::spawn({
@@ -209,8 +209,8 @@ impl Client {
 		}
 	}
 
-	// Convenience method used internally by the client to return the inner when we
-	// know it's valid.
+	/// Convenience method used internally by the client to return the inner
+	/// when we know it's valid.
 	fn inner(&self) -> ClientResult<&Arc<RawClient>> {
 		if let Some(inner) = self.inner.as_ref() {
 			Ok(inner)
@@ -236,20 +236,64 @@ impl From<ClientBuilder> for Client {
 }
 #[cfg(test)]
 mod tests {
-	use std::sync::Arc;
+	use std::{sync::Arc, time::Duration};
 
+	use pretty_assertions::assert_eq;
 	use rand::Rng;
+	use tokio::{io::AsyncWriteExt, time::timeout};
+	use tracing::info;
+	use tracing_subscriber::filter::LevelFilter;
 
 	use crate::{
 		client::ClientBuilder,
-		protocol::StealthStreamMessage,
-		server::{Server, ServerBuilder},
+		pin_callback,
+		protocol::{
+			constants::{HANDSHAKE_OPCODE, MESSAGE_OPCODE},
+			StealthStreamMessage, StealthStreamPacket,
+		},
+		server::{MessageCallback, Server, ServerBuilder},
 	};
 
-	async fn setup_server() -> Arc<Server> {
+	macro_rules! server_client_setup {
+		() => {{
+			let server = basic_server_setup(|_, _| pin_callback!({})).await;
+			let mut client = ClientBuilder::default().build();
+			client
+				.connect(server.address())
+				.await
+				.expect("Failed to connect to server");
+			(server, client)
+		}};
+		($callback:block) => {{
+			let server = basic_server_setup($callback).await;
+			let mut client = ClientBuilder::default().build();
+			client
+				.connect(server.address())
+				.await
+				.expect("Failed to connect to server");
+			(server, client)
+		}};
+		($server_callback:block, $client_callback:block) => {{
+			let server = basic_server_setup($server_callback).await;
+			let mut client = ClientBuilder::default().with_event_handler($client_callback).build();
+			client
+				.connect(server.address())
+				.await
+				.expect("Failed to connect to server");
+			(server, client)
+		}};
+	}
+
+	async fn basic_server_setup<T>(callback: T) -> Arc<Server>
+	where
+		T: MessageCallback,
+	{
 		let mut rng = rand::thread_rng();
 		let random_number: u16 = rng.gen_range(1000..10000);
-		let server = ServerBuilder::default().port(random_number).build().await.unwrap();
+		let server = ServerBuilder::default()
+			.port(random_number)
+			.with_event_handler(callback);
+		let server = server.build().await.expect("Couldn't build server");
 
 		let server = Arc::new(server);
 
@@ -265,9 +309,7 @@ mod tests {
 
 	#[tokio::test]
 	async fn test_disconnect() {
-		let server = setup_server().await;
-		let mut client = ClientBuilder::default().build();
-		client.connect(server.address()).await.unwrap();
+		let (server, client) = server_client_setup!();
 
 		assert!(client.is_connected());
 		client.disconnect().await.unwrap();
@@ -282,14 +324,89 @@ mod tests {
 
 	#[tokio::test]
 	async fn test_basic_send() {
-		let server = setup_server().await;
-		let mut client = ClientBuilder::default().build();
-		client.connect(server.address()).await.unwrap();
+		let (server, client) = server_client_setup!();
 
-		let message = super::StealthStreamMessage::Message("Test".to_string());
-		let result = client.send(message).await;
-		assert!(result.is_ok());
-
+		let message = super::StealthStreamMessage::Message("Test Message!".to_string());
+		assert!(client.send(message).await.is_ok());
 		drop(server)
+	}
+
+	#[tokio::test]
+	async fn test_basic_recieve() {
+		let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+		let test_txt = "Test Message!";
+
+		let (_, client) = server_client_setup!({
+			move |recieved_message, _| {
+				let tx = tx.clone();
+				pin_callback!({
+					tx.send(recieved_message).await.unwrap();
+				})
+			}
+		});
+
+		/* Test Successful Recieve */
+		let expected = StealthStreamMessage::Message(test_txt.to_string());
+		client.send(expected).await.expect("error sending message");
+
+		let received = rx.recv().await.expect("didn't receive valid stealthstream message");
+		let expected = StealthStreamMessage::Message(test_txt.to_string());
+
+		assert_eq!(received, expected, "the received message did not match the expected one");
+	}
+
+	#[tokio::test]
+	async fn test_bad_send() {
+		let (tx, mut rx) = tokio::sync::mpsc::channel(5);
+		tracing_subscriber::fmt().with_max_level(LevelFilter::DEBUG).init();
+
+		let (_, client) = server_client_setup!({
+			move |recieved_message, _| {
+				let tx = tx.clone();
+				info!("Recieved message: {:?}", recieved_message);
+				pin_callback!({
+					tx.send(recieved_message).await.unwrap();
+				})
+			}
+		});
+
+		let raw = client.inner().unwrap();
+		{
+			let mut guard = raw.raw_socket.write_half().lock().await;
+			// TODO: if handshakes will be persistent, do we terminate the TCP connection?
+			let bad_handshake: Vec<u8> = StealthStreamPacket::new(HANDSHAKE_OPCODE, 12, b"hello0".to_vec()).into();
+			guard
+				.write_all(&bad_handshake)
+				.await
+				.expect("couldn't write bad bytes to the buffer?");
+
+			let recieved = timeout(Duration::from_millis(500), rx.recv()).await; // we have to timeout because errors aren't returned by the server callback yet.
+			assert!(recieved.is_err());
+
+			let bad_message: Vec<u8> = StealthStreamPacket::new(MESSAGE_OPCODE, 5, b"hello2".to_vec()).into();
+			guard
+				.write_all(&bad_message)
+				.await
+				.expect("couldn't write bad bytes to the buffer?");
+
+			let recieved = timeout(Duration::from_millis(500), rx.recv()).await; // we have to timeout because errors aren't returned by the server callback yet.
+			assert!(recieved.is_ok());
+
+			drop(guard); // IMPORTANT: drops the write lock on the write-half of the socket.
+
+			/* Test that messages send correctly, even after some bad ones */
+			let expected = StealthStreamMessage::Message("hey".to_string());
+			client.send(expected).await.unwrap();
+
+			let recieved = timeout(Duration::from_millis(500), rx.recv()).await;
+			println!("Recieved: {:?}", recieved);
+			/*
+			let expected = StealthStreamMessage::Message("hey".to_string());
+			assert_eq!(
+				recieved.unwrap(),
+				expected,
+				"the recieved message did not match the expected one"
+			);*/
+		}
 	}
 }

@@ -54,6 +54,10 @@ impl StealthStream {
 		let mut write_half = self.write_half.lock().await;
 		write_half.shutdown().await.unwrap();
 	}
+
+	/// Used internally for fuzzing input.
+	#[cfg(test)]
+	pub(crate) fn write_half(&self) -> &Arc<Mutex<OwnedWriteHalf>> { &self.write_half }
 }
 
 impl From<TcpStream> for StealthStream {

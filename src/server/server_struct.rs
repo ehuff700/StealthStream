@@ -114,7 +114,8 @@ impl Server {
 						},
 						Err(e) => {
 							error!("Error reading from client: {:?}", e);
-							break;
+							// TODO: we need to match the error here and figure out what to do with it.
+							continue;
 						},
 					};
 				}
