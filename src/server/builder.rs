@@ -7,7 +7,7 @@ use tokio::net::TcpListener;
 use tracing::debug;
 
 use super::{server_struct::Server, MessageCallback, ServerResult};
-use crate::{client::RawClient, pin_callback, protocol::StealthStreamMessage, server::BoxedCallbackFuture};
+use crate::{client::RawClient, pin_callback, protocol::StealthStreamMessage};
 
 /// Utility Struct to build a [Server] as needed
 pub struct ServerBuilder {

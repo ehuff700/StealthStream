@@ -27,6 +27,7 @@ pub struct StealthStreamPacket {
 }
 
 impl StealthStreamPacket {
+	#[allow(clippy::needless_pass_by_ref_mut)]
 	pub async fn from_stream<T>(stream: &mut T) -> Result<StealthStreamPacket, Error>
 	where
 		T: AsyncReadExt + Unpin + Send + Sync,
@@ -34,11 +35,15 @@ impl StealthStreamPacket {
 		let mut opcode_buffer = [0u8; 1];
 		let mut length_buffer = [0u8; 2];
 
+		// Read Opcode Byte
 		stream
 			.read_exact(&mut opcode_buffer)
 			.await
 			.map_err(|_| StealthStreamPacketErrors::OpcodeByteMissing)?;
 
+		let opcode = opcode_buffer[0];
+
+		// Read Length Prefix
 		stream
 			.read_exact(&mut length_buffer)
 			.await
@@ -52,7 +57,6 @@ impl StealthStreamPacket {
 		let mut message_buffer = vec![0u8; length as usize];
 		stream.read_exact(&mut message_buffer).await?;
 
-		let opcode = opcode_buffer[0];
 		if !Self::is_opcode_valid(opcode) {
 			return Err(StealthStreamPacketErrors::InvalidOpcodeByte(opcode))?;
 		}

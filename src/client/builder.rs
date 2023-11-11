@@ -3,11 +3,7 @@ use std::{sync::Arc, time::Duration};
 use tracing::debug;
 
 use super::{Client, RawClient};
-use crate::{
-	pin_callback,
-	protocol::StealthStreamMessage,
-	server::{BoxedCallbackFuture, MessageCallback},
-};
+use crate::{pin_callback, protocol::StealthStreamMessage, server::MessageCallback};
 
 pub struct ClientBuilder {
 	/// Whether or not the client should attempt to reconnect when disconnected.

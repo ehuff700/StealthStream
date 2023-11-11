@@ -1,6 +1,6 @@
 use std::{net::IpAddr, sync::Arc};
 
-use stealthstream::{client::RawClient, protocol::StealthStreamMessage, server::ServerBuilder};
+use stealthstream::{client::RawClient, pin_callback, protocol::StealthStreamMessage, server::ServerBuilder};
 use tracing::{debug, info};
 use tracing_subscriber::filter::LevelFilter;
 
@@ -24,7 +24,7 @@ async fn main() -> Result<()> {
 	let server = ServerBuilder::default()
 		.address("0.0.0.0".parse::<IpAddr>().unwrap())
 		.with_event_handler(|message_type, client| {
-			Box::pin(async {
+			pin_callback!({
 				callback_function(message_type, client).await;
 			})
 		})
