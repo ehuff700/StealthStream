@@ -242,7 +242,6 @@ mod tests {
 	use rand::Rng;
 	use tokio::{io::AsyncWriteExt, time::timeout};
 	use tracing::info;
-	use tracing_subscriber::filter::LevelFilter;
 
 	use crate::{
 		client::ClientBuilder,
@@ -358,7 +357,6 @@ mod tests {
 	#[tokio::test]
 	async fn test_bad_send() {
 		let (tx, mut rx) = tokio::sync::mpsc::channel(5);
-		tracing_subscriber::fmt().with_max_level(LevelFilter::DEBUG).init();
 
 		let (_, client) = server_client_setup!({
 			move |recieved_message, _| {
@@ -383,14 +381,15 @@ mod tests {
 			let recieved = timeout(Duration::from_millis(500), rx.recv()).await; // we have to timeout because errors aren't returned by the server callback yet.
 			assert!(recieved.is_err());
 
-			let bad_message: Vec<u8> = StealthStreamPacket::new(MESSAGE_OPCODE, 5, b"hello2".to_vec()).into();
+			let bad_message: Vec<u8> = StealthStreamPacket::new(MESSAGE_OPCODE, 10, b"hello2".to_vec()).into();
+
 			guard
 				.write_all(&bad_message)
 				.await
 				.expect("couldn't write bad bytes to the buffer?");
 
 			let recieved = timeout(Duration::from_millis(500), rx.recv()).await; // we have to timeout because errors aren't returned by the server callback yet.
-			assert!(recieved.is_ok());
+			assert!(recieved.is_err());
 
 			drop(guard); // IMPORTANT: drops the write lock on the write-half of the socket.
 
@@ -399,14 +398,7 @@ mod tests {
 			client.send(expected).await.unwrap();
 
 			let recieved = timeout(Duration::from_millis(500), rx.recv()).await;
-			println!("Recieved: {:?}", recieved);
-			/*
-			let expected = StealthStreamMessage::Message("hey".to_string());
-			assert_eq!(
-				recieved.unwrap(),
-				expected,
-				"the recieved message did not match the expected one"
-			);*/
+			assert!(recieved.is_ok_and(|v| v.is_some()))
 		}
 	}
 }

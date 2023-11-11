@@ -76,7 +76,7 @@ impl Server {
 			let delay = self.poke_delay;
 			tokio::task::spawn(Self::poke_task(client.clone(), delay));
 
-			let (write_tx, write_rx) = mpsc::channel::<StealthStreamMessage>(32);
+			let (write_tx, write_rx) = mpsc::channel::<StealthStreamMessage>(100);
 			Self::spawn_read_task(&client, write_tx);
 			self.spawn_write_task(&client, write_rx);
 		}
@@ -124,7 +124,7 @@ impl Server {
 	}
 
 	/// Spawns a write task that will recieve messages from the mpsc channel and
-	/// write them to the client.
+	/// send them to the callback/event handler.
 	fn spawn_write_task(&self, client: &Arc<RawClient>, mut rx: mpsc::Receiver<StealthStreamMessage>) {
 		tokio::task::spawn({
 			let write_client = client.clone();

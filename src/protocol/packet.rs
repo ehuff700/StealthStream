@@ -1,5 +1,7 @@
 use std::time::Duration;
 
+#[cfg(unix)]
+use arbitrary::Arbitrary;
 use thiserror::Error;
 use tokio::{io::AsyncReadExt, time::timeout};
 
@@ -24,7 +26,15 @@ pub enum StealthStreamPacketErrors {
 	#[error("error reading from the underlying stream: {0}")]
 	StreamError(#[from] std::io::Error),
 }
+#[cfg(target_os = "unix")]
+#[derive(Debug, Arbitrary)]
+pub struct StealthStreamPacket {
+	opcode: u8,
+	length: u16,
+	content: Vec<u8>,
+}
 
+#[cfg(not(target_os = "unix"))]
 #[derive(Debug)]
 pub struct StealthStreamPacket {
 	opcode: u8,
