@@ -1,22 +1,18 @@
-use std::io::Read;
-use std::{fmt::Display, sync::Arc};
+use std::{fmt::Display, io::Read, sync::Arc};
 
 use thiserror::Error;
 use tracing::{debug, info};
 use uuid::Uuid;
 
+use super::{
+	constants::{DEFAULT_HANDSHAKE_LENGTH, HANDSHAKE_LENGTH_WITH_SESSION_ID, SUPPORTED_VERSIONS},
+	StealthStreamMessage,
+};
 use crate::{
 	client::{Client, ClientResult, RawClient},
 	errors::ServerErrors,
 	server::ServerResult,
 };
-
-use super::StealthStreamMessage;
-
-/// The list of supported versions for the Stealth Stream Protocol.
-pub(crate) const SUPPORTED_VERSIONS: [u8; 1] = [1];
-const DEFAULT_HANDSHAKE_LENGTH: usize = 1;
-const HANDSHAKE_LENGTH_WITH_SESSION_ID: usize = DEFAULT_HANDSHAKE_LENGTH + 16;
 
 pub struct Handshake {
 	version: u8,
@@ -49,7 +45,8 @@ impl Handshake {
 			.await
 	}
 
-	/// Utility function that validates a [StealthStreamMessage::Handshake] message.
+	/// Utility function that validates a [StealthStreamMessage::Handshake]
+	/// message.
 	pub fn parse_handshake(mut message_buffer: &[u8]) -> Result<Self, HandshakeErrors> {
 		let mut session_id: Option<Uuid> = None;
 		let version;

@@ -4,11 +4,10 @@ use std::{
 };
 
 use tokio::net::TcpListener;
-use tracing::{debug, info};
-
-use crate::{client::RawClient, protocol::StealthStreamMessage, server::BoxedCallbackFuture};
+use tracing::debug;
 
 use super::{server_struct::Server, MessageCallback, ServerResult};
+use crate::{client::RawClient, pin_callback, protocol::StealthStreamMessage, server::BoxedCallbackFuture};
 
 /// Utility Struct to build a [Server] as needed
 pub struct ServerBuilder {
@@ -18,7 +17,8 @@ pub struct ServerBuilder {
 	port: u16,
 	/// The delay between each [StealthStreamMessage::Poke] message in ms.
 	poke_delay: u64,
-	/// The event handler that will be invoked when a [StealthStreamMessage] is received
+	/// The event handler that will be invoked when a [StealthStreamMessage] is
+	/// received
 	event_handler: Option<Arc<dyn MessageCallback>>,
 }
 
@@ -32,7 +32,8 @@ impl ServerBuilder {
 		}
 	}
 
-	/// Sets the ip address to bind the server to (localhost loopback by default).
+	/// Sets the ip address to bind the server to (localhost loopback by
+	/// default).
 	pub fn address(mut self, address: impl Into<IpAddr>) -> Self {
 		self.address = address.into();
 		self
@@ -44,7 +45,8 @@ impl ServerBuilder {
 		self
 	}
 
-	/// Determines the delay between each iteration of the [StealthStreamMessage::Poke] task, in ms.
+	/// Determines the delay between each iteration of the
+	/// [StealthStreamMessage::Poke] task, in ms.
 	///
 	/// 5000 ms by default.
 	pub fn set_poke_delay(mut self, poke_delay: u64) -> Self {
@@ -63,7 +65,6 @@ impl ServerBuilder {
 		let listener = TcpListener::bind(address).await?;
 		let event_handler = self.event_handler.unwrap_or_else(|| Self::default_event_handler());
 
-		info!("StealthStream server listening on {}", address);
 		Ok(Server::new(
 			listener,
 			SocketAddr::new(self.address, self.port),
@@ -74,15 +75,14 @@ impl ServerBuilder {
 
 	fn default_event_handler() -> Arc<dyn MessageCallback> {
 		let handler = |message: StealthStreamMessage, _: Arc<RawClient>| {
-			debug!("Received message: {:?}", message);
-			Box::pin(async move {}) as BoxedCallbackFuture
+			pin_callback!({
+				debug!("Received message: {:?}", message);
+			})
 		};
 		Arc::new(handler)
 	}
 }
 
 impl Default for ServerBuilder {
-	fn default() -> Self {
-		Self::new()
-	}
+	fn default() -> Self { Self::new() }
 }

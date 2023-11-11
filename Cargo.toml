@@ -3,7 +3,12 @@ name = "stealthstream"
 version = "0.1.0"
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[features]
+default = ["signals"]
+
+# This feature enables signal handlers to be registered for client and server (e.g ctrl + c).
+signals = []
+
 [dev-dependencies]
 futures-util = "0.3.29"
 tokio-tungstenite = "0.20.1"

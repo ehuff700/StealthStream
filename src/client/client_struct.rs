@@ -12,14 +12,13 @@ use tokio::{net::TcpStream, signal};
 use tracing::error;
 use uuid::Uuid;
 
+use super::ClientBuilder;
 use crate::{
 	errors::ClientErrors,
-	protocol::{GoodbyeCodes, Handshake, StealthStream, StealthStreamMessage, GRACEFUL},
+	protocol::{constants::GRACEFUL, GoodbyeCodes, Handshake, StealthStream, StealthStreamMessage},
 	server::MessageCallback,
 	StealthStreamResult,
 };
-
-use super::ClientBuilder;
 
 pub type ClientResult<T> = std::result::Result<T, ClientErrors>;
 
@@ -41,7 +40,8 @@ pub struct RawClient {
 	connection_state: Arc<AtomicBool>,
 	/// The address context of the remote peer.
 	///
-	/// This value will be [AddressContext::ClientAddress] when viewed server side and [AddressContext::ServerAddress] when viewed client side.
+	/// This value will be [AddressContext::ClientAddress] when viewed server
+	/// side and [AddressContext::ServerAddress] when viewed client side.
 	peer_address: AddressContext,
 }
 
@@ -58,7 +58,8 @@ impl RawClient {
 		})
 	}
 
-	/// Creates a new [RawClient] from a [tokio::net::TcpStream] and [SocketAddr].
+	/// Creates a new [RawClient] from a [tokio::net::TcpStream] and
+	/// [SocketAddr].
 	pub(crate) fn from_stream(socket: TcpStream, address: SocketAddr) -> Self {
 		let connection_state = Arc::new(AtomicBool::new(true));
 		let raw_socket = socket.into();
@@ -75,9 +76,12 @@ impl RawClient {
 		self.raw_socket.write(message.into()).await.map_err(ClientErrors::from)
 	}
 
-	/// Gracefully disconnects the client from the server by sending a [StealthStreamMessage::Goodbye] message as well as updating the connection state.
+	/// Gracefully disconnects the client from the server by sending a
+	/// [StealthStreamMessage::Goodbye] message as well as updating the
+	/// connection state.
 	///
-	/// This method will additionally close the underlying socket, preventing any messages from being sent.
+	/// This method will additionally close the underlying socket, preventing
+	/// any messages from being sent.
 	pub async fn disconnect(&self) -> ClientResult<()> {
 		self.send(StealthStreamMessage::create_goodbye(GRACEFUL)).await?;
 		self.raw_socket.close().await;
@@ -95,22 +99,14 @@ impl RawClient {
 	}
 
 	/// Reads a single message from the stream.
-	pub(crate) async fn recieve(&self) -> StealthStreamResult<StealthStreamMessage> {
-		self.raw_socket.read().await
-	}
+	pub(crate) async fn recieve(&self) -> StealthStreamResult<StealthStreamMessage> { self.raw_socket.read().await }
 
 	/* Getters */
-	pub fn socket(&self) -> &StealthStream {
-		&self.raw_socket
-	}
+	pub fn socket(&self) -> &StealthStream { &self.raw_socket }
 
-	pub fn peer_address(&self) -> &AddressContext {
-		&self.peer_address
-	}
+	pub fn peer_address(&self) -> &AddressContext { &self.peer_address }
 
-	pub fn is_connected(&self) -> bool {
-		self.connection_state.load(Ordering::SeqCst)
-	}
+	pub fn is_connected(&self) -> bool { self.connection_state.load(Ordering::SeqCst) }
 }
 
 #[derive(Clone)]
@@ -120,14 +116,18 @@ pub struct Client {
 	inner: Option<Arc<RawClient>>,
 	/// Whether or not the client should attempt to reconnect when disconnected.
 	should_reconnect: bool,
-	/// The interval of time between reconnect attempts. If this parameter is not specified, an exponential backoff will be attempted.
+	/// The interval of time between reconnect attempts. If this parameter is
+	/// not specified, an exponential backoff will be attempted.
 	reconnect_interval: Option<Duration>,
-	/// The maximum number of reconnect attempts. If this parameter is not specified, a maximum of 10 attempts will be attempted.
+	/// The maximum number of reconnect attempts. If this parameter is not
+	/// specified, a maximum of 10 attempts will be attempted.
 	reconnect_attempts: u32,
-	/// The unique identifier of the session, provided by the server after a successful handshake.
-	/// This will be None if this is the client's first connection.
+	/// The unique identifier of the session, provided by the server after a
+	/// successful handshake. This will be None if this is the client's first
+	/// connection.
 	pub(crate) session_id: Option<Uuid>,
-	/// Custom event handler defined by the client for use in recieving messages from the server.
+	/// Custom event handler defined by the client for use in recieving messages
+	/// from the server.
 	event_handler: Arc<dyn MessageCallback>,
 }
 
@@ -145,6 +145,7 @@ impl Client {
 		Handshake::start_client_handshake(self).await?;
 
 		// Setup a ctrl + c listener to gracefully close the connection.
+		#[cfg(feature = "signals")]
 		tokio::task::spawn({
 			let cloned = self.clone();
 			async move {
@@ -159,13 +160,12 @@ impl Client {
 	}
 
 	/// Sends a message to/from the client to the stream.
-	pub async fn send(&self, message: StealthStreamMessage) -> ClientResult<()> {
-		self.inner()?.send(message).await
-	}
+	pub async fn send(&self, message: StealthStreamMessage) -> ClientResult<()> { self.inner()?.send(message).await }
 
 	/// Spawns a new tokio task which listens for incoming messages.
 	///
-	/// This function will block until an error occurrs or the client is disconnected.
+	/// This function will block until an error occurrs or the client is
+	/// disconnected.
 	pub async fn listen(&self) -> StealthStreamResult<()> {
 		let inner = self.inner()?;
 		tokio::task::spawn({
@@ -187,12 +187,13 @@ impl Client {
 		Ok(())
 	}
 
-	/// Gracefully disconnects the client from the server by sending a [StealthStreamMessage::Goodbye] message as well as updating the connection state.
+	/// Gracefully disconnects the client from the server by sending a
+	/// [StealthStreamMessage::Goodbye] message as well as updating the
+	/// connection state.
 	///
-	/// This method will additionally close the underlying socket, preventing any messages from being sent.
-	pub async fn disconnect(&self) -> ClientResult<()> {
-		self.inner()?.disconnect().await
-	}
+	/// This method will additionally close the underlying socket, preventing
+	/// any messages from being sent.
+	pub async fn disconnect(&self) -> ClientResult<()> { self.inner()?.disconnect().await }
 
 	/// Functionally the same as `disconnect`, but with a reason.
 	pub async fn disconnect_with_reason(&self, code: impl Into<GoodbyeCodes>, reason: &str) -> ClientResult<()> {
@@ -208,7 +209,8 @@ impl Client {
 		}
 	}
 
-	// Convenience method used internally by the client to return the inner when we know it's valid.
+	// Convenience method used internally by the client to return the inner when we
+	// know it's valid.
 	fn inner(&self) -> ClientResult<&Arc<RawClient>> {
 		if let Some(inner) = self.inner.as_ref() {
 			Ok(inner)

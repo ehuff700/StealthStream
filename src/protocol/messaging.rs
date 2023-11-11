@@ -2,21 +2,14 @@ use std::io::Read;
 
 use uuid::Uuid;
 
+use super::{
+	constants::{
+		GOODBYE_OPCODE, GRACEFUL, HANDSHAKE_OPCODE, INVALID_HANDSHAKE, MESSAGE_OPCODE, POKE_OPCODE, SERVER_RESTARTING,
+		UNKNOWN,
+	},
+	Handshake, StealthStreamPacket,
+};
 use crate::errors::{Error, ServerErrors};
-
-use super::{Handshake, StealthStreamPacket};
-
-/* Opcode Consts */
-pub(crate) const HANDSHAKE_OPCODE: u8 = 0x0;
-pub(crate) const POKE_OPCODE: u8 = 0x1;
-pub(crate) const MESSAGE_OPCODE: u8 = 0x2;
-pub(crate) const GOODBYE_OPCODE: u8 = 0x3;
-
-/* Goodbye Codes */
-pub(crate) const GRACEFUL: u8 = 100;
-pub(crate) const SERVER_RESTARTING: u8 = 101;
-pub(crate) const INVALID_HANDSHAKE: u8 = 102;
-pub(crate) const UNKNOWN: u8 = 0;
 
 #[derive(Debug, PartialEq)]
 pub enum StealthStreamMessage {
@@ -29,7 +22,8 @@ pub enum StealthStreamMessage {
 impl StealthStreamMessage {
 	/// Returns the opcode for the corresponding message type.
 	///
-	/// The opcode is always the first byte of the message and indicates the type of message.
+	/// The opcode is always the first byte of the message and indicates the
+	/// type of message.
 	pub fn opcode(&self) -> u8 {
 		match self {
 			StealthStreamMessage::Handshake { .. } => HANDSHAKE_OPCODE,
@@ -39,7 +33,8 @@ impl StealthStreamMessage {
 		}
 	}
 
-	/// Serializes the message content into bytes.
+	/// Serializes the message content into bytes. This is only applicable to
+	/// the opcodes that have actual content
 	pub fn serialize_content_bytes(&self) -> Vec<u8> {
 		match self {
 			StealthStreamMessage::Goodbye { code, reason } => {
@@ -68,8 +63,9 @@ impl StealthStreamMessage {
 
 	/// Converts a raw message buffer into a `StealthStreamMessage`.
 	///
-	/// This method handles the deserialization of messages with extra content, such as Message, Goodbye, Handshake, etc.
-	/// If the provided opcode byte was not valid, this method will return an [Error::InvalidOpcode] error.
+	/// This method handles the deserialization of messages with extra content,
+	/// such as Message, Goodbye, Handshake, etc. If the provided opcode byte
+	/// was not valid, this method will return an [Error::InvalidOpcode] error.
 	pub fn from_message(packet: &StealthStreamPacket) -> Result<Self, Error> {
 		let mut message_buffer = packet.content();
 		let opcode_byte = packet.opcode();
@@ -99,11 +95,12 @@ impl StealthStreamMessage {
 				Ok(message)
 			},
 			POKE_OPCODE => Ok(StealthStreamMessage::Poke),
-			_ => Err(Error::InvalidOpcode(opcode_byte)),
+			_ => unreachable!(), // TODO: find more scalable solution, see is_opcode_valid in stream.rs
 		}
 	}
 
-	/// Utility function to create a [StealthStreamMessage::Goodbye] message without a reason.
+	/// Utility function to create a [StealthStreamMessage::Goodbye] message
+	/// without a reason.
 	pub fn create_goodbye(code: impl Into<GoodbyeCodes>) -> Self {
 		StealthStreamMessage::Goodbye {
 			code: code.into(),
@@ -111,7 +108,8 @@ impl StealthStreamMessage {
 		}
 	}
 
-	/// Utility function to create a [StealthStreamMessage::Goodbye] message with a reason
+	/// Utility function to create a [StealthStreamMessage::Goodbye] message
+	/// with a reason
 	pub fn create_goodbye_with_reason(code: impl Into<GoodbyeCodes>, reason: &str) -> Self {
 		StealthStreamMessage::Goodbye {
 			code: code.into(),
@@ -165,7 +163,5 @@ impl From<Vec<u8>> for GoodbyeCodes {
 }
 
 impl GoodbyeCodes {
-	pub fn to_byte(&self) -> [u8; 1] {
-		[(*self).into()]
-	}
+	pub fn to_byte(&self) -> [u8; 1] { [(*self).into()] }
 }

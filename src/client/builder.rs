@@ -2,29 +2,32 @@ use std::{sync::Arc, time::Duration};
 
 use tracing::debug;
 
+use super::{Client, RawClient};
 use crate::{
+	pin_callback,
 	protocol::StealthStreamMessage,
 	server::{BoxedCallbackFuture, MessageCallback},
 };
-
-use super::{Client, RawClient};
 
 pub struct ClientBuilder {
 	/// Whether or not the client should attempt to reconnect when disconnected.
 	///
 	/// False by default.
 	pub(crate) should_reconnect: bool,
-	/// The interval of time between reconnect attempts. If this parameter is not specified, an exponential backoff will be attempted.
+	/// The interval of time between reconnect attempts. If this parameter is
+	/// not specified, an exponential backoff will be attempted.
 	///
 	/// None by default.
 	pub(crate) reconnect_interval: Option<Duration>,
-	/// The maximum number of reconnect attempts. If this parameter is not specified, a maximum of 10 attempts will be attempted.
+	/// The maximum number of reconnect attempts. If this parameter is not
+	/// specified, a maximum of 10 attempts will be attempted.
 	///
 	/// None by default.
 	pub(crate) reconnect_attempts: u32,
 
-	/// Event handler for when a message is received from the server. If this parameter is not specified,
-	/// A default event handler which simply logs the message will be used.
+	/// Event handler for when a message is received from the server. If this
+	/// parameter is not specified, A default event handler which simply logs
+	/// the message will be used.
 	pub(crate) event_handler: Arc<dyn MessageCallback>,
 }
 
@@ -38,7 +41,8 @@ impl ClientBuilder {
 		}
 	}
 
-	/// Determines whether or not a client should attempt to reconnect to the server on disconnect.
+	/// Determines whether or not a client should attempt to reconnect to the
+	/// server on disconnect.
 	pub fn should_reconnect(&mut self, should_reconnect: bool) -> &mut Self {
 		self.should_reconnect = should_reconnect;
 		self
@@ -64,24 +68,19 @@ impl ClientBuilder {
 
 	// TODO: implement on close/error? Or leave that up to the implementation?
 
-	pub fn build(self) -> Client {
-		self.into()
-	}
+	pub fn build(self) -> Client { self.into() }
 
 	/// Default event handler which simply logs the message.
 	fn default_event_handler() -> Arc<dyn MessageCallback> {
 		let handler = |message: StealthStreamMessage, _: Arc<RawClient>| {
-			Box::pin(async move {
-				// Async code can be run in here if needed
-				debug!("Received message: {:?}", message);
-			}) as BoxedCallbackFuture
+			pin_callback!({
+				debug!(target: "default_event_handler", "Received message: {:?}", message);
+			})
 		};
 		Arc::new(handler)
 	}
 }
 
 impl Default for ClientBuilder {
-	fn default() -> Self {
-		Self::new()
-	}
+	fn default() -> Self { Self::new() }
 }

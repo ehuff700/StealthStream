@@ -2,15 +2,15 @@ use std::string::FromUtf8Error;
 
 use thiserror::Error;
 
-use crate::protocol::HandshakeErrors;
+use crate::protocol::{HandshakeErrors, StealthStreamPacketErrors};
 
 /// Error type for the StealthStream library.
 #[derive(Debug, Error)]
 pub enum Error {
 	#[error(transparent)]
 	Io(#[from] std::io::Error),
-	#[error("Invalid opcode provided: {0}")]
-	InvalidOpcode(u8),
+	#[error(transparent)]
+	InvalidPacket(#[from] StealthStreamPacketErrors),
 	#[error("Invalid UTF-8: {0:?}")]
 	Utf8Error(#[from] FromUtf8Error),
 	#[error(transparent)]
