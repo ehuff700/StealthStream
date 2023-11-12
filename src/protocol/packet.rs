@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{io::ErrorKind, time::Duration};
 
 #[cfg(unix)]
 use arbitrary::Arbitrary;
@@ -25,7 +25,10 @@ pub enum StealthStreamPacketErrors {
 	ContentReadTimedOut,
 	#[error("error reading from the underlying stream: {0}")]
 	StreamError(#[from] std::io::Error),
+	#[error("the stream has been closed")]
+	StreamClosed,
 }
+
 #[cfg(target_os = "unix")]
 #[derive(Debug, Arbitrary)]
 pub struct StealthStreamPacket {
@@ -53,7 +56,6 @@ impl StealthStreamPacket {
 		}
 	}
 
-	#[allow(clippy::needless_pass_by_ref_mut)]
 	pub async fn from_stream<T>(stream: &mut T) -> Result<StealthStreamPacket, Error>
 	where
 		T: AsyncReadExt + Unpin + Send + Sync,
@@ -62,10 +64,13 @@ impl StealthStreamPacket {
 		let mut length_buffer = [0u8; 2]; // set a hard buffer of two bytes for the length prefix
 
 		// Read Opcode Byte
-		stream
-			.read_exact(&mut opcode_buffer)
-			.await
-			.map_err(|_| StealthStreamPacketErrors::OpcodeByteMissing)?;
+		stream.read_exact(&mut opcode_buffer).await.map_err(|e| {
+			if e.kind() == ErrorKind::UnexpectedEof {
+				StealthStreamPacketErrors::StreamClosed
+			} else {
+				StealthStreamPacketErrors::StreamError(e)
+			}
+		})?;
 
 		let opcode = opcode_buffer[0];
 
@@ -77,7 +82,13 @@ impl StealthStreamPacket {
 		timeout(Duration::from_millis(500), stream.read_exact(&mut length_buffer)) //TODO: make timeout configurable
 			.await
 			.map_err(|_| StealthStreamPacketErrors::LengthPrefixMissing)?
-			.map_err(StealthStreamPacketErrors::StreamError)?;
+			.map_err(|e| {
+				if e.kind() == ErrorKind::UnexpectedEof {
+					StealthStreamPacketErrors::StreamClosed
+				} else {
+					StealthStreamPacketErrors::StreamError(e)
+				}
+			})?;
 
 		let length = u16::from_be_bytes(length_buffer);
 
@@ -88,7 +99,13 @@ impl StealthStreamPacket {
 		timeout(Duration::from_millis(500), stream.read_exact(&mut message_buffer))
 			.await
 			.map_err(|_| StealthStreamPacketErrors::ContentReadTimedOut)?
-			.map_err(StealthStreamPacketErrors::StreamError)?;
+			.map_err(|e| {
+				if e.kind() == ErrorKind::UnexpectedEof {
+					StealthStreamPacketErrors::StreamClosed
+				} else {
+					StealthStreamPacketErrors::StreamError(e)
+				}
+			})?;
 
 		let packet = StealthStreamPacket {
 			opcode,

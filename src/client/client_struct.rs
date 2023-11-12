@@ -35,7 +35,7 @@ pub enum AddressContext {
 /// The raw client used both in server and client mode.
 pub struct RawClient {
 	/// A handle to the underlying socket, wrapped in a [StealthStream] struct.
-	raw_socket: StealthStream,
+	raw_socket: Arc<StealthStream>,
 	/// An atomic boolean used to track the client's connection state.
 	connection_state: Arc<AtomicBool>,
 	/// The address context of the remote peer.
@@ -48,7 +48,7 @@ pub struct RawClient {
 impl RawClient {
 	/// Used by builder functions to create a new [RawClient]
 	pub(crate) async fn new(address: SocketAddr, peer_address: AddressContext) -> ClientResult<Self> {
-		let raw_socket = TcpStream::connect(address).await?.into();
+		let raw_socket = Arc::new(TcpStream::connect(address).await?.into());
 		let connection_state = Arc::new(AtomicBool::new(true));
 
 		Ok(Self {
@@ -62,7 +62,7 @@ impl RawClient {
 	/// [SocketAddr].
 	pub(crate) fn from_stream(socket: TcpStream, address: SocketAddr) -> Self {
 		let connection_state = Arc::new(AtomicBool::new(true));
-		let raw_socket = socket.into();
+		let raw_socket = Arc::new(socket.into());
 
 		Self {
 			raw_socket,
@@ -99,7 +99,7 @@ impl RawClient {
 	}
 
 	/// Reads a single message from the stream.
-	pub(crate) async fn recieve(&self) -> StealthStreamResult<StealthStreamMessage> { self.raw_socket.read().await }
+	pub async fn recieve(&self) -> StealthStreamResult<StealthStreamMessage> { self.raw_socket.read().await }
 
 	/* Getters */
 	pub fn socket(&self) -> &StealthStream { &self.raw_socket }
@@ -209,9 +209,9 @@ impl Client {
 		}
 	}
 
-	/// Convenience method used internally by the client to return the inner
+	/// Convenience method used internally by the crate to return the inner
 	/// when we know it's valid.
-	fn inner(&self) -> ClientResult<&Arc<RawClient>> {
+	pub fn inner(&self) -> ClientResult<&Arc<RawClient>> {
 		if let Some(inner) = self.inner.as_ref() {
 			Ok(inner)
 		} else {
@@ -253,7 +253,7 @@ mod tests {
 		server::{MessageCallback, Server, ServerBuilder},
 	};
 
-	macro_rules! server_client_setup {
+	macro_rules! server_client_setup1 {
 		() => {{
 			let server = basic_server_setup(|_, _| pin_callback!({})).await;
 			let mut client = ClientBuilder::default().build();
@@ -308,7 +308,7 @@ mod tests {
 
 	#[tokio::test]
 	async fn test_disconnect() {
-		let (server, client) = server_client_setup!();
+		let (server, client) = server_client_setup1!();
 
 		assert!(client.is_connected());
 		client.disconnect().await.unwrap();
@@ -323,7 +323,7 @@ mod tests {
 
 	#[tokio::test]
 	async fn test_basic_send() {
-		let (server, client) = server_client_setup!();
+		let (server, client) = server_client_setup1!();
 
 		let message = super::StealthStreamMessage::Message("Test Message!".to_string());
 		assert!(client.send(message).await.is_ok());
@@ -335,7 +335,7 @@ mod tests {
 		let (tx, mut rx) = tokio::sync::mpsc::channel(1);
 		let test_txt = "Test Message!";
 
-		let (_, client) = server_client_setup!({
+		let (_, client) = server_client_setup1!({
 			move |recieved_message, _| {
 				let tx = tx.clone();
 				pin_callback!({
@@ -358,7 +358,7 @@ mod tests {
 	async fn test_bad_send() {
 		let (tx, mut rx) = tokio::sync::mpsc::channel(5);
 
-		let (_, client) = server_client_setup!({
+		let (_, client) = server_client_setup1!({
 			move |recieved_message, _| {
 				let tx = tx.clone();
 				info!("Recieved message: {:?}", recieved_message);
@@ -388,6 +388,13 @@ mod tests {
 				.await
 				.expect("couldn't write bad bytes to the buffer?");
 
+			let recieved = timeout(Duration::from_millis(500), rx.recv()).await; // we have to timeout because errors aren't returned by the server callback yet.
+			assert!(recieved.is_err());
+
+			guard
+				.write_all(&[6])
+				.await
+				.expect("couldn't write bad bytes to the buffer?");
 			let recieved = timeout(Duration::from_millis(500), rx.recv()).await; // we have to timeout because errors aren't returned by the server callback yet.
 			assert!(recieved.is_err());
 
