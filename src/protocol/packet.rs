@@ -12,7 +12,7 @@ use crate::protocol::framing::FrameOpcodes;
 const MAX: usize = 8 * 1024 * 1024;
 
 #[derive(Debug, Error)]
-pub enum StealthStreamPacketErrors {
+pub enum StealthStreamPacketError {
 	#[error("packet missing opcode byte")]
 	OpcodeByteMissing,
 	#[error("packet contains invalid opco byte: {0}")]
@@ -94,7 +94,7 @@ impl From<StealthStreamPacket> for Vec<u8> {
 pub struct StealthStreamCodec;
 
 impl Decoder for StealthStreamCodec {
-	type Error = StealthStreamPacketErrors;
+	type Error = StealthStreamPacketError;
 	type Item = StealthStreamPacket;
 
 	// TODO: implement beginning/continuation frames
@@ -108,12 +108,12 @@ impl Decoder for StealthStreamCodec {
 		src.advance(2);
 
 		if src.len() < 2 {
-			return Err(StealthStreamPacketErrors::LengthPrefixMissing);
+			return Err(StealthStreamPacketError::LengthPrefixMissing);
 		}
 
 		let length = src.get_u32_le() as usize;
 		if length > MAX {
-			return Err(StealthStreamPacketErrors::LengthOutOfBounds(length));
+			return Err(StealthStreamPacketError::LengthOutOfBounds(length));
 		}
 
 		if src.len() < length {
@@ -153,7 +153,7 @@ impl Decoder for StealthStreamCodec {
 }
 
 impl Encoder<StealthStreamPacket> for StealthStreamCodec {
-	type Error = StealthStreamPacketErrors;
+	type Error = StealthStreamPacketError;
 
 	fn encode(&mut self, item: StealthStreamPacket, dst: &mut BytesMut) -> Result<(), Self::Error> {
 		// TODO: implement length requirements
@@ -187,11 +187,10 @@ mod test {
 	use super::StealthStreamCodec;
 	use crate::protocol::{
 		framing::{FrameFlags, FrameOpcodes},
-		StealthStreamPacket, StealthStreamPacketErrors,
+		StealthStreamPacket, StealthStreamPacketError,
 	};
 
-	type PacketResult = Result<StealthStreamPacket, StealthStreamPacketErrors>;
-	use test_log::test;
+	type PacketResult = Result<StealthStreamPacket, StealthStreamPacketError>;
 
 	async fn setup_test_server(sender: Sender<PacketResult>) -> String {
 		let mut rng = rand::thread_rng();
@@ -212,7 +211,7 @@ mod test {
 		address.to_string()
 	}
 
-	#[test(tokio::test)]
+	#[tokio::test]
 	async fn test_basic_binary_send() {
 		let (tx, mut rx) = tokio::sync::mpsc::channel::<PacketResult>(5);
 
@@ -245,7 +244,7 @@ mod test {
 		assert!(test.is_some_and(|v| v.is_ok_and(|v| v.content == content)))
 	}
 
-	#[test(tokio::test)]
+	#[tokio::test]
 	async fn test_early_eof() {
 		let (tx, mut rx) = tokio::sync::mpsc::channel::<PacketResult>(5);
 		let address = setup_test_server(tx).await;

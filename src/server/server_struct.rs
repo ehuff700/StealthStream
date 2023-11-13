@@ -6,7 +6,7 @@ use tracing::{debug, error, info};
 use super::{MessageCallback, ServerResult};
 use crate::{
 	client::RawClient,
-	protocol::{constants::INVALID_HANDSHAKE, Handshake, StealthStreamMessage, StealthStreamPacketErrors},
+	protocol::{constants::INVALID_HANDSHAKE, Handshake, StealthStreamMessage, StealthStreamPacketError},
 };
 
 pub struct Server {
@@ -113,7 +113,7 @@ impl Server {
 							},
 							Err(e) => {
 								// TODO: we need to match the error here and figure out what to do with it.
-								if let StealthStreamPacketErrors::StreamClosed = e {
+								if let StealthStreamPacketError::StreamClosed = e {
 									let _ = read_client.disconnect().await; // force disconnect, throwing away any error type
 									break;
 								} else {

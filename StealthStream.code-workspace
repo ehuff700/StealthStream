@@ -1,0 +1,20 @@
+{
+	"folders": [
+		{
+			"name": "src",
+			"path": "src"
+		},
+		{
+			"name": "benches",
+			"path": "benches"
+		},
+		{
+			"name": "examples",
+			"path": "examples"
+		},
+		{
+			"path": "."
+		}
+	],
+	"settings": {}
+}

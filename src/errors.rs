@@ -2,7 +2,7 @@ use std::string::FromUtf8Error;
 
 use thiserror::Error;
 
-use crate::protocol::{HandshakeErrors, StealthStreamPacketErrors};
+use crate::protocol::{HandshakeErrors, StealthStreamPacketError};
 
 /// Error type for the StealthStream library.
 #[derive(Debug, Error)]
@@ -10,7 +10,7 @@ pub enum Error {
 	#[error(transparent)]
 	Io(#[from] std::io::Error),
 	#[error(transparent)]
-	InvalidPacket(#[from] StealthStreamPacketErrors),
+	InvalidPacket(#[from] StealthStreamPacketError),
 	#[error("Invalid UTF-8: {0:?}")]
 	Utf8Error(#[from] FromUtf8Error),
 	#[error(transparent)]
@@ -26,7 +26,7 @@ pub enum ClientErrors {
 	#[error("{0}")]
 	ConnectionError(Box<dyn std::error::Error + Send + Sync + 'static>),
 	#[error(transparent)]
-	InvalidPacket(#[from] StealthStreamPacketErrors),
+	InvalidPacket(#[from] StealthStreamPacketError),
 	#[error("Client Error Occurred: {0}")]
 	MiscError(#[from] anyhow::Error),
 }

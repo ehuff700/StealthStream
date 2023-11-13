@@ -1,5 +1,5 @@
 use stealthstream::{client::ClientBuilder, protocol::StealthStreamMessage};
-use tracing::error;
+use tracing::{debug, error};
 use tracing_subscriber::filter::LevelFilter;
 
 #[tokio::main]
@@ -14,6 +14,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 	client.listen().await?;
 
 	while client.is_connected() {
+		debug!("sending message");
 		if let Err(why) = client
 			.send(StealthStreamMessage::Message("How are you?!".to_string()))
 			.await
@@ -22,7 +23,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 			break;
 		}
 
-		tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+		tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
 	}
 
 	Ok(())
