@@ -2,14 +2,20 @@ use std::{io::ErrorKind, time::Duration};
 
 #[cfg(unix)]
 use arbitrary::Arbitrary;
+use bytes::{Buf, BufMut, BytesMut};
 use thiserror::Error;
 use tokio::{io::AsyncReadExt, time::timeout};
+use tokio_util::codec::{Decoder, Encoder};
+use tracing::debug;
 
 use super::{
 	constants::{GOODBYE_OPCODE, HANDSHAKE_OPCODE, MESSAGE_OPCODE, POKE_OPCODE},
+	framing::FrameFlags,
 	StealthStreamMessage,
 };
-use crate::errors::Error;
+use crate::{errors::Error, protocol::framing::FrameOpcodes};
+
+const MAX: usize = 8 * 1024 * 1024;
 
 #[derive(Debug, Error)]
 pub enum StealthStreamPacketErrors {
@@ -17,6 +23,8 @@ pub enum StealthStreamPacketErrors {
 	OpcodeByteMissing,
 	#[error("packet contains invalid opco byte: {0}")]
 	InvalidOpcodeByte(u8),
+	#[error("packet contains invalid flag byte: {0}")]
+	InvalidFlagByte(u8),
 	#[error("packet missing length prefix")]
 	LengthPrefixMissing,
 	#[error("packet length out of bounds: {0}")]
@@ -43,6 +51,77 @@ pub struct StealthStreamPacket {
 	opcode: u8,
 	length: u16,
 	content: Vec<u8>,
+}
+
+#[derive(Debug)]
+pub struct StealthStreamPacketV2 {
+	opcode: FrameOpcodes,
+	flag: FrameFlags,
+	length: usize,
+	content: Vec<u8>,
+}
+
+pub struct StealthStreamCodec;
+impl Decoder for StealthStreamCodec {
+	type Error = StealthStreamPacketErrors;
+	type Item = StealthStreamPacketV2;
+
+	fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
+		if src.len() < 2 {
+			return Ok(None);
+		}
+
+		let opcode = FrameOpcodes::try_from(src[0])?;
+		let flag = FrameFlags::try_from(src[1])?;
+		src.advance(2);
+
+		if src.len() < 2 {
+			return Err(StealthStreamPacketErrors::LengthPrefixMissing);
+		}
+
+		let length = src.get_u32_le() as usize;
+		if length > MAX {
+			return Err(StealthStreamPacketErrors::LengthOutOfBounds(length));
+		}
+
+		if src.len() < length {
+			src.reserve(length - src.len());
+			return Ok(None);
+		}
+
+		let content = src[0..length].to_vec();
+		src.advance(length);
+
+		let testing = String::from_utf8_lossy(&content);
+		debug!("Testing string: {:?}", testing);
+
+		let packet = StealthStreamPacketV2 {
+			opcode,
+			flag,
+			length,
+			content,
+		};
+
+		Ok(Some(packet))
+	}
+}
+
+impl Encoder<StealthStreamPacketV2> for StealthStreamCodec {
+	type Error = StealthStreamPacketErrors;
+
+	fn encode(&mut self, item: StealthStreamPacketV2, dst: &mut BytesMut) -> Result<(), Self::Error> {
+		// TODO: implement length requirements
+		let length = u32::to_le_bytes(item.length as u32);
+
+		// Reserve space for opcode/flag/length prefix + content length
+		dst.reserve(6 + item.content.len());
+		dst.put_u8(item.opcode as u8);
+		dst.put_u8(item.flag as u8);
+		dst.extend_from_slice(&length);
+		dst.extend_from_slice(&item.content);
+
+		Ok(())
+	}
 }
 
 impl StealthStreamPacket {
