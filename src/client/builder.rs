@@ -24,7 +24,7 @@ pub struct ClientBuilder {
 	/// Event handler for when a message is received from the server. If this
 	/// parameter is not specified, A default event handler which simply logs
 	/// the message will be used.
-	pub(crate) event_handler: Arc<dyn MessageCallback>,
+	pub(crate) event_handler: Option<Arc<dyn MessageCallback>>,
 }
 
 impl ClientBuilder {
@@ -33,7 +33,7 @@ impl ClientBuilder {
 			should_reconnect: false,
 			reconnect_interval: None, // TODO: implement exponential backoff
 			reconnect_attempts: 10,
-			event_handler: Self::default_event_handler(),
+			event_handler: None,
 		}
 	}
 
@@ -57,8 +57,8 @@ impl ClientBuilder {
 	}
 
 	/// Adds an event handler for incoming messages from the server.
-	pub fn with_event_handler(&mut self, event_handler: Arc<dyn MessageCallback>) -> &mut Self {
-		self.event_handler = event_handler;
+	pub fn with_event_handler(mut self, event_handler: impl MessageCallback) -> Self {
+		self.event_handler = Some(Arc::new(event_handler));
 		self
 	}
 
@@ -67,7 +67,7 @@ impl ClientBuilder {
 	pub fn build(self) -> Client { self.into() }
 
 	/// Default event handler which simply logs the message.
-	fn default_event_handler() -> Arc<dyn MessageCallback> {
+	pub (crate) fn default_event_handler() -> Arc<dyn MessageCallback> {
 		let handler = |message: StealthStreamMessage, _: Arc<RawClient>| {
 			pin_callback!({
 				debug!(target: "default_event_handler", "Received message: {:?}", message);

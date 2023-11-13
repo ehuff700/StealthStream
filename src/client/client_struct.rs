@@ -16,7 +16,7 @@ use super::ClientBuilder;
 use crate::{
 	errors::ClientErrors,
 	protocol::{
-		constants::GRACEFUL, GoodbyeCodes, Handshake, StealthStream, StealthStreamMessage, StealthStreamPacketErrors,
+		constants::GRACEFUL, GoodbyeCodes, Handshake, StealthStream, StealthStreamMessage, StealthStreamPacketError,
 	},
 	server::MessageCallback,
 	StealthStreamResult,
@@ -78,7 +78,7 @@ impl RawClient {
 		if self.is_connected() {
 			self.raw_socket.write(message.into()).await.map_err(ClientErrors::from)
 		} else {
-			Err(StealthStreamPacketErrors::StreamClosed)?
+			Err(StealthStreamPacketError::StreamClosed)?
 		}
 	}
 
@@ -90,7 +90,7 @@ impl RawClient {
 	/// any messages from being sent.
 	pub async fn disconnect(&self) -> ClientResult<()> {
 		self.send(StealthStreamMessage::create_goodbye(GRACEFUL)).await?;
-		self.raw_socket.close().await;
+		self.raw_socket.close().await?;
 		self.connection_state.store(false, Ordering::SeqCst);
 		Ok(())
 	}
@@ -99,7 +99,7 @@ impl RawClient {
 	pub async fn disconnect_with_reason(&self, code: impl Into<GoodbyeCodes>, reason: &str) -> ClientResult<()> {
 		self.send(StealthStreamMessage::create_goodbye_with_reason(code, reason))
 			.await?;
-		self.raw_socket.close().await;
+		self.raw_socket.close().await?;
 		self.connection_state.store(false, Ordering::SeqCst);
 		Ok(())
 	}
@@ -107,7 +107,7 @@ impl RawClient {
 	/// Receives a message from the stream.
 	///
 	/// This method will return `None` if the underlying socket is closed.
-	pub async fn receive(&self) -> Option<Result<StealthStreamMessage, StealthStreamPacketErrors>> {
+	pub async fn receive(&self) -> Option<Result<StealthStreamMessage, StealthStreamPacketError>> {
 		self.raw_socket.read().await
 	}
 
@@ -199,6 +199,13 @@ impl Client {
 		Ok(())
 	}
 
+	/// Receives a message from the stream.
+	///
+	/// This method will return `None` if the underlying socket is closed.
+	pub async fn receive(&self) -> Option<Result<StealthStreamMessage, StealthStreamPacketError>> {
+		self.inner().unwrap().receive().await
+	}
+
 	/// Gracefully disconnects the client from the server by sending a
 	/// [StealthStreamMessage::Goodbye] message as well as updating the
 	/// connection state.
@@ -242,7 +249,9 @@ impl From<ClientBuilder> for Client {
 			should_reconnect: value.should_reconnect,
 			reconnect_interval: value.reconnect_interval,
 			reconnect_attempts: value.reconnect_attempts,
-			event_handler: value.event_handler,
+			event_handler: value
+				.event_handler
+				.unwrap_or_else(|| ClientBuilder::default_event_handler()),
 		}
 	}
 }
@@ -255,15 +264,15 @@ mod tests {
 	use rand::Rng;
 	use tokio::time::timeout;
 	use tracing::info;
-	use tracing_subscriber::filter::LevelFilter;
 
 	use crate::{
 		client::ClientBuilder,
 		errors::ClientErrors,
 		pin_callback,
-		protocol::{constants::HANDSHAKE_OPCODE, StealthStreamMessage, StealthStreamPacket, StealthStreamPacketErrors},
+		protocol::{StealthStreamMessage, StealthStreamPacket, StealthStreamPacketError},
 		server::{MessageCallback, Server, ServerBuilder},
 	};
+
 	macro_rules! server_client_setup1 {
 		() => {{
 			let server = basic_server_setup(|_, _| pin_callback!({})).await;
@@ -316,9 +325,8 @@ mod tests {
 
 		server
 	}
-	use test_log::test;
 
-	#[test(tokio::test)]
+	#[tokio::test]
 	async fn test_disconnect() {
 		let (server, client) = server_client_setup1!();
 
@@ -328,14 +336,12 @@ mod tests {
 
 		// Assert that messages can no longer be sent after disconnect.
 		let result = client.send(StealthStreamMessage::Heartbeat).await;
-		assert!(
-			result.is_err_and(|e| matches!(e, ClientErrors::InvalidPacket(StealthStreamPacketErrors::StreamClosed)))
-		);
+		assert!(result.is_err_and(|e| matches!(e, ClientErrors::InvalidPacket(StealthStreamPacketError::StreamClosed))));
 
 		drop(server);
 	}
 
-	#[test(tokio::test)]
+	#[tokio::test]
 	async fn test_basic_send() {
 		let (server, client) = server_client_setup1!();
 
@@ -348,7 +354,6 @@ mod tests {
 	async fn test_basic_recieve() {
 		let (tx, mut rx) = tokio::sync::mpsc::channel(1);
 		let test_txt = "Test Message!";
-		tracing_subscriber::fmt().with_max_level(LevelFilter::DEBUG).init();
 
 		let (_, client) = server_client_setup1!({
 			move |recieved_message, _| {
@@ -358,7 +363,7 @@ mod tests {
 				})
 			}
 		});
-		tokio::time::sleep(Duration::from_millis(1000)).await;
+		tokio::time::sleep(Duration::from_millis(1)).await;
 
 		/* Test Successful Recieve */
 		let expected = StealthStreamMessage::Message(test_txt.to_string());
@@ -386,21 +391,20 @@ mod tests {
 
 		let raw = client.inner().unwrap();
 
-		tokio::time::sleep(Duration::from_millis(1000)).await;
+		tokio::time::sleep(Duration::from_millis(1)).await;
 
-		let mut guard = raw.raw_socket.write_half().lock().await;
-		// TODO: if handshakes will be persistent, do we terminate the TCP connection?
-		// test shorter content, longer prefix
-		let bad_handshake: Vec<u8> = StealthStreamPacket::new(HANDSHAKE_OPCODE, 12, b"hellox".to_vec()).into();
-		let buf = guard.write_buffer_mut();
-		buf.extend_from_slice(&bad_handshake);
-
-		guard.write_buffer_mut().extend_from_slice(&bad_handshake);
-		guard.flush().await.expect("couldn't flush stream");
+		/* Send a Bad Packet */
+		let mut guard = raw.raw_socket.writer().lock().await;
+		let packet = StealthStreamPacket::new(0, 2, vec![1, 2]);
+		let bytes: Vec<u8> = packet.into();
+		guard.write_buffer_mut().extend_from_slice(&bytes);
+		guard.flush().await.expect("couldn't flush raw write stream");
 		drop(guard);
 
 		let received = timeout(Duration::from_millis(300), rx.recv()).await;
 		assert!(received.is_err());
+
+		/* Assert that normal packets can be sent after bad ones */
 		let expected = StealthStreamMessage::Message("hey".to_string());
 		client.send(expected).await.unwrap();
 		let received = timeout(Duration::from_millis(300), rx.recv()).await;

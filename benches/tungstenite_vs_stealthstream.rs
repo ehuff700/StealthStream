@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use criterion::{criterion_group, criterion_main, Criterion};
 use futures_util::{future, SinkExt, StreamExt, TryStreamExt};
@@ -16,7 +16,7 @@ use tokio::{
 };
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use url::Url;
-const TEST_MESSAGE_LENGTH: usize = 200;
+const TEST_MESSAGE_LENGTH: usize = 10;
 
 fn generate_long_utf8_string(length: usize) -> String {
 	let repeated_char = 'A'; // Replace with the character you want to repeat
@@ -98,6 +98,21 @@ fn stealthstream_benchmark(c: &mut Criterion) {
 		client
 	});
 
+	std::thread::sleep(Duration::from_millis(100));
+
+	let inner = client.inner().unwrap().socket();
+	let test_message = generate_long_utf8_string(TEST_MESSAGE_LENGTH);
+
+	group.bench_with_input("stealthstream", &test_message, |b, i| {
+		b.to_async(&rt).iter(|| async {
+			client
+				.send(StealthStreamMessage::Message(i.to_string()))
+				.await
+				.expect("Couldn't send message from client");
+			client.receive().await;
+		})
+	});
+
 	group.bench_function("stealthstream", |b| {
 		b.to_async(&rt).iter_batched(
 			|| generate_long_utf8_string(TEST_MESSAGE_LENGTH),
@@ -107,9 +122,19 @@ fn stealthstream_benchmark(c: &mut Criterion) {
 					.await
 					.expect("Couldn't send message from client");
 
-				if let Some(Err(e)) = client.inner().unwrap().receive().await {
-					panic!("Error recieving message: {:?}", e);
+				{
+					let mut guard = inner.reader().lock().await;
+					if let Some(msg) = guard.next().await {
+						match msg {
+							Ok(_) => {},
+							Err(e) => panic!("Error during the websocket communication: {:?}", e),
+						}
+					}
 				}
+
+				/*if let Some(Err(e)) = client.inner().unwrap().receive().await {
+					panic!("Error recieving message: {:?}", e);
+				}*/
 				//client.disconnect().await.expect("couldn't disconnect");
 			},
 			criterion::BatchSize::LargeInput,

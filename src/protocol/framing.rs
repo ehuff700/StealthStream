@@ -4,7 +4,7 @@ use super::{
 		ACKNOWLEDGEMENT_OPCODE, BEGINNING_FLAG, BINARY_OPCODE, COMPLETION_FLAG, CONTINUATION_FLAG, END_FLAG,
 		ERROR_OPCODE, GOODBYE_OPCODE, HANDSHAKE_OPCODE, HEARTBEAT_OPCODE,
 	},
-	StealthStreamPacketErrors,
+	StealthStreamPacketError,
 };
 
 #[derive(Debug, Clone)]
@@ -38,7 +38,7 @@ impl FrameOpcodes {
 }
 
 impl TryFrom<u8> for FrameOpcodes {
-	type Error = StealthStreamPacketErrors;
+	type Error = StealthStreamPacketError;
 
 	fn try_from(opcode: u8) -> Result<Self, <FrameOpcodes as TryFrom<u8>>::Error> {
 		match opcode {
@@ -48,7 +48,7 @@ impl TryFrom<u8> for FrameOpcodes {
 			BINARY_OPCODE => Ok(FrameOpcodes::Binary),
 			ACKNOWLEDGEMENT_OPCODE => Ok(FrameOpcodes::Acknowledgement),
 			ERROR_OPCODE => Ok(FrameOpcodes::Error),
-			_ => Err(StealthStreamPacketErrors::InvalidOpcodeByte(opcode)),
+			_ => Err(StealthStreamPacketError::InvalidOpcodeByte(opcode)),
 		}
 	}
 }
@@ -77,7 +77,7 @@ pub enum FrameFlags {
 }
 
 impl TryFrom<u8> for FrameFlags {
-	type Error = StealthStreamPacketErrors;
+	type Error = StealthStreamPacketError;
 
 	fn try_from(flag: u8) -> Result<Self, <FrameFlags as TryFrom<u8>>::Error> {
 		match flag {
@@ -85,7 +85,7 @@ impl TryFrom<u8> for FrameFlags {
 			BEGINNING_FLAG => Ok(FrameFlags::Beginning),
 			CONTINUATION_FLAG => Ok(FrameFlags::Continuation),
 			END_FLAG => Ok(FrameFlags::End),
-			_ => Err(StealthStreamPacketErrors::InvalidFlagByte(flag)),
+			_ => Err(StealthStreamPacketError::InvalidFlagByte(flag)),
 		}
 	}
 }

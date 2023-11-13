@@ -7,7 +7,7 @@ use super::{
 		BINARY_OPCODE, GOODBYE_OPCODE, GRACEFUL, HANDSHAKE_OPCODE, HEARTBEAT_OPCODE, INVALID_HANDSHAKE,
 		SERVER_RESTARTING, UNKNOWN,
 	},
-	Handshake, StealthStreamPacket, StealthStreamPacketErrors,
+	Handshake, StealthStreamPacket, StealthStreamPacketError,
 };
 
 #[derive(Debug, PartialEq)]
@@ -66,7 +66,7 @@ impl StealthStreamMessage {
 	/// content, such as Message, Goodbye, Handshake, etc. If the provided
 	/// opcode byte was not valid, this method will return an
 	/// [Error::InvalidOpcode] error.
-	pub fn from_message_v2(packet: &StealthStreamPacket) -> Result<Self, StealthStreamPacketErrors> {
+	pub fn from_message(packet: &StealthStreamPacket) -> Result<Self, StealthStreamPacketError> {
 		let mut message_buffer = packet.content();
 		let opcode_byte = packet.opcode();
 

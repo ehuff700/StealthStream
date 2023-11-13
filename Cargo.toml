@@ -15,13 +15,6 @@ rand = "0.8.5"
 criterion = { version = "0.5.1", features = ["async_tokio"] }
 pretty_assertions = "1.4.0"
 url = "2.4.1"
-test-log = { version = "0.2.13", features = [
-    "trace",
-], default-features = false }
-tracing-subscriber = { version = "0.3", default-features = false, features = [
-    "env-filter",
-    "fmt",
-] }
 
 
 [target.'cfg(target_os = "unix")'.dependencies]
