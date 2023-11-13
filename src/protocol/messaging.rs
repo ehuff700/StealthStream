@@ -4,17 +4,16 @@ use uuid::Uuid;
 
 use super::{
 	constants::{
-		GOODBYE_OPCODE, GRACEFUL, HANDSHAKE_OPCODE, INVALID_HANDSHAKE, MESSAGE_OPCODE, POKE_OPCODE, SERVER_RESTARTING,
-		UNKNOWN,
+		BINARY_OPCODE, GOODBYE_OPCODE, GRACEFUL, HANDSHAKE_OPCODE, HEARTBEAT_OPCODE, INVALID_HANDSHAKE,
+		SERVER_RESTARTING, UNKNOWN,
 	},
-	Handshake, StealthStreamPacket,
+	Handshake, StealthStreamPacket, StealthStreamPacketErrors,
 };
-use crate::errors::{Error, ServerErrors};
 
 #[derive(Debug, PartialEq)]
 pub enum StealthStreamMessage {
 	Handshake { version: u8, session_id: Option<Uuid> },    // 0x0
-	Poke,                                                   // 0x1
+	Heartbeat,                                              // 0x1
 	Message(String),                                        // 0x2
 	Goodbye { code: GoodbyeCodes, reason: Option<String> }, // 0x3
 }
@@ -27,8 +26,8 @@ impl StealthStreamMessage {
 	pub fn opcode(&self) -> u8 {
 		match self {
 			StealthStreamMessage::Handshake { .. } => HANDSHAKE_OPCODE,
-			StealthStreamMessage::Poke => POKE_OPCODE,
-			StealthStreamMessage::Message(_) => MESSAGE_OPCODE,
+			StealthStreamMessage::Heartbeat => HEARTBEAT_OPCODE,
+			StealthStreamMessage::Message(_) => BINARY_OPCODE, // FIXME
 			StealthStreamMessage::Goodbye { .. } => GOODBYE_OPCODE,
 		}
 	}
@@ -63,19 +62,20 @@ impl StealthStreamMessage {
 
 	/// Converts a raw message buffer into a `StealthStreamMessage`.
 	///
-	/// This method handles the deserialization of messages with extra content,
-	/// such as Message, Goodbye, Handshake, etc. If the provided opcode byte
-	/// was not valid, this method will return an [Error::InvalidOpcode] error.
-	pub fn from_message(packet: &StealthStreamPacket) -> Result<Self, Error> {
+	/// This method handles the deserialization of messages with extra
+	/// content, such as Message, Goodbye, Handshake, etc. If the provided
+	/// opcode byte was not valid, this method will return an
+	/// [Error::InvalidOpcode] error.
+	pub fn from_message_v2(packet: &StealthStreamPacket) -> Result<Self, StealthStreamPacketErrors> {
 		let mut message_buffer = packet.content();
 		let opcode_byte = packet.opcode();
 
 		match opcode_byte {
 			HANDSHAKE_OPCODE => {
-				let handshake = Handshake::parse_handshake(message_buffer).map_err(ServerErrors::from)?;
+				let handshake = Handshake::parse_handshake(message_buffer)?;
 				Ok(handshake.into())
 			},
-			MESSAGE_OPCODE => Ok(StealthStreamMessage::Message(
+			BINARY_OPCODE => Ok(StealthStreamMessage::Message(
 				String::from_utf8(message_buffer.to_vec()).unwrap(),
 			)),
 			GOODBYE_OPCODE => {
@@ -94,7 +94,7 @@ impl StealthStreamMessage {
 
 				Ok(message)
 			},
-			POKE_OPCODE => Ok(StealthStreamMessage::Poke),
+			HEARTBEAT_OPCODE => Ok(StealthStreamMessage::Heartbeat),
 			_ => unreachable!(), // TODO: find more scalable solution, see is_opcode_valid in stream.rs
 		}
 	}
@@ -153,7 +153,7 @@ impl From<GoodbyeCodes> for u8 {
 
 impl From<Vec<u8>> for GoodbyeCodes {
 	fn from(value: Vec<u8>) -> Self {
-		match value.as_slice() {
+		match &value[..] {
 			[GRACEFUL] => GoodbyeCodes::Graceful,
 			[SERVER_RESTARTING] => GoodbyeCodes::ServerRestarting,
 			[INVALID_HANDSHAKE] => GoodbyeCodes::InvalidHandshake,

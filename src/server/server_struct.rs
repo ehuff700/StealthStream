@@ -6,7 +6,6 @@ use tracing::{debug, error, info};
 use super::{MessageCallback, ServerResult};
 use crate::{
 	client::RawClient,
-	errors::Error,
 	protocol::{constants::INVALID_HANDSHAKE, Handshake, StealthStreamMessage, StealthStreamPacketErrors},
 };
 
@@ -55,7 +54,6 @@ impl Server {
 				},
 				Err(e) => {
 					error!("Error accepting connection: {:?}", e);
-					return Err(e.into());
 				},
 			}
 		}
@@ -87,7 +85,7 @@ impl Server {
 	/// configured delay.
 	async fn poke_task(client: Arc<RawClient>, delay: u64) -> ServerResult<()> {
 		while client.is_connected() {
-			client.send(StealthStreamMessage::Poke).await?;
+			client.send(StealthStreamMessage::Heartbeat).await?;
 			debug!("Poking connection for {:?}", client.peer_address());
 			tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
 		}
@@ -100,29 +98,33 @@ impl Server {
 		tokio::task::spawn({
 			let read_client = client.clone();
 			async move {
-				loop {
-					match read_client.recieve().await {
-						Ok(message) => {
-							if matches!(message, StealthStreamMessage::Goodbye { .. }) {
-								read_client.disconnect().await.unwrap();
-							}
+				while read_client.is_connected() {
+					while let Some(read_result) = read_client.receive().await {
+						match read_result {
+							Ok(message) => {
+								if matches!(message, StealthStreamMessage::Goodbye { .. }) {
+									read_client.disconnect().await.unwrap();
+								}
 
-							// Sends the parsed message to the write task.
-							if let Err(e) = tx.send(message).await {
-								error!("Error sending message to write task: {:?}", e);
-							}
-						},
-						Err(e) => {
-							// TODO: we need to match the error here and figure out what to do with it.
-							if let Error::InvalidPacket(StealthStreamPacketErrors::StreamClosed) = e {
-								let _ = read_client.disconnect().await; // force disconnect, throwing away any error type
-								break;
-							} else {
-								error!("Error reading from client ({:?}): {:?}", read_client.peer_address(), e);
-								// TODO: send the error back to the client here
-							}
-						},
-					};
+								// Sends the parsed message to the write task.
+								if let Err(e) = tx.send(message).await {
+									error!("Error sending message to write task: {:?}", e);
+								}
+							},
+							Err(e) => {
+								// TODO: we need to match the error here and figure out what to do with it.
+								if let StealthStreamPacketErrors::StreamClosed = e {
+									let _ = read_client.disconnect().await; // force disconnect, throwing away any error type
+									break;
+								} else {
+									error!("Error reading from client ({:?}): {:?}", read_client.peer_address(), e);
+									// TODO: send the error back to the client
+									// here
+								}
+							},
+						};
+					}
+					debug!("server: socket closed");
 				}
 			}
 		});
@@ -263,7 +265,7 @@ mod tests {
 			.expect("error shutting down the raw TcpStream");
 
 		let raw_stream_result = timeout(Duration::from_millis(500), rx.recv()).await; // This should fall with a "StreamClosed" error
-		assert!(raw_stream_result.is_err());
+		assert!(raw_stream_result.is_err(), "Somehow recieved a successful message?");
 
 		/* Test Successful Recieve */
 		let packet = StealthStreamMessage::Message("test".to_string());

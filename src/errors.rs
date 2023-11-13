@@ -25,6 +25,8 @@ pub enum ClientErrors {
 	Io(#[from] std::io::Error),
 	#[error("{0}")]
 	ConnectionError(Box<dyn std::error::Error + Send + Sync + 'static>),
+	#[error(transparent)]
+	InvalidPacket(#[from] StealthStreamPacketErrors),
 	#[error("Client Error Occurred: {0}")]
 	MiscError(#[from] anyhow::Error),
 }
