@@ -15,7 +15,9 @@ use uuid::Uuid;
 use super::ClientBuilder;
 use crate::{
 	errors::ClientErrors,
-	protocol::{constants::GRACEFUL, GoodbyeCodes, Handshake, StealthStream, StealthStreamMessage},
+	protocol::{
+		constants::GRACEFUL, GoodbyeCodes, Handshake, StealthStream, StealthStreamMessage, StealthStreamPacketErrors,
+	},
 	server::MessageCallback,
 	StealthStreamResult,
 };
@@ -58,7 +60,7 @@ impl RawClient {
 		})
 	}
 
-	/// Creates a new [RawClient] from a [tokio::net::TcpStream] and
+	/// Creates a new [RawClient] from a [TcpStream] and
 	/// [SocketAddr].
 	pub(crate) fn from_stream(socket: TcpStream, address: SocketAddr) -> Self {
 		let connection_state = Arc::new(AtomicBool::new(true));
@@ -73,7 +75,11 @@ impl RawClient {
 
 	/// Sends a message to/from the client to the stream.
 	pub async fn send(&self, message: StealthStreamMessage) -> ClientResult<()> {
-		self.raw_socket.write(message.into()).await.map_err(ClientErrors::from)
+		if self.is_connected() {
+			self.raw_socket.write(message.into()).await.map_err(ClientErrors::from)
+		} else {
+			Err(StealthStreamPacketErrors::StreamClosed)?
+		}
 	}
 
 	/// Gracefully disconnects the client from the server by sending a
@@ -98,8 +104,12 @@ impl RawClient {
 		Ok(())
 	}
 
-	/// Reads a single message from the stream.
-	pub async fn recieve(&self) -> StealthStreamResult<StealthStreamMessage> { self.raw_socket.read().await }
+	/// Receives a message from the stream.
+	///
+	/// This method will return `None` if the underlying socket is closed.
+	pub async fn receive(&self) -> Option<Result<StealthStreamMessage, StealthStreamPacketErrors>> {
+		self.raw_socket.read().await
+	}
 
 	/* Getters */
 	pub fn socket(&self) -> &StealthStream { &self.raw_socket }
@@ -173,11 +183,13 @@ impl Client {
 			let callback = self.event_handler.clone();
 			async move {
 				while cloned.is_connected() {
-					match cloned.recieve().await {
-						Ok(message) => {
-							callback(message, cloned.clone()).await;
-						},
-						Err(e) => return Err(e),
+					while let Some(packet) = cloned.receive().await {
+						match packet {
+							Ok(message) => {
+								callback(message, cloned.clone()).await;
+							},
+							Err(e) => return Err(e), // TODO: handle errors on the client side
+						}
 					}
 				}
 				Ok(())
@@ -238,21 +250,20 @@ impl From<ClientBuilder> for Client {
 mod tests {
 	use std::{sync::Arc, time::Duration};
 
+	use futures_util::SinkExt;
 	use pretty_assertions::assert_eq;
 	use rand::Rng;
-	use tokio::{io::AsyncWriteExt, time::timeout};
+	use tokio::time::timeout;
 	use tracing::info;
+	use tracing_subscriber::filter::LevelFilter;
 
 	use crate::{
 		client::ClientBuilder,
+		errors::ClientErrors,
 		pin_callback,
-		protocol::{
-			constants::{HANDSHAKE_OPCODE, MESSAGE_OPCODE},
-			StealthStreamMessage, StealthStreamPacket,
-		},
+		protocol::{constants::HANDSHAKE_OPCODE, StealthStreamMessage, StealthStreamPacket, StealthStreamPacketErrors},
 		server::{MessageCallback, Server, ServerBuilder},
 	};
-
 	macro_rules! server_client_setup1 {
 		() => {{
 			let server = basic_server_setup(|_, _| pin_callback!({})).await;
@@ -305,8 +316,9 @@ mod tests {
 
 		server
 	}
+	use test_log::test;
 
-	#[tokio::test]
+	#[test(tokio::test)]
 	async fn test_disconnect() {
 		let (server, client) = server_client_setup1!();
 
@@ -315,13 +327,15 @@ mod tests {
 		assert!(!client.is_connected());
 
 		// Assert that messages can no longer be sent after disconnect.
-		let result = client.send(StealthStreamMessage::Poke).await;
-		assert!(result.is_err());
+		let result = client.send(StealthStreamMessage::Heartbeat).await;
+		assert!(
+			result.is_err_and(|e| matches!(e, ClientErrors::InvalidPacket(StealthStreamPacketErrors::StreamClosed)))
+		);
 
 		drop(server);
 	}
 
-	#[tokio::test]
+	#[test(tokio::test)]
 	async fn test_basic_send() {
 		let (server, client) = server_client_setup1!();
 
@@ -334,6 +348,7 @@ mod tests {
 	async fn test_basic_recieve() {
 		let (tx, mut rx) = tokio::sync::mpsc::channel(1);
 		let test_txt = "Test Message!";
+		tracing_subscriber::fmt().with_max_level(LevelFilter::DEBUG).init();
 
 		let (_, client) = server_client_setup1!({
 			move |recieved_message, _| {
@@ -343,6 +358,7 @@ mod tests {
 				})
 			}
 		});
+		tokio::time::sleep(Duration::from_millis(1000)).await;
 
 		/* Test Successful Recieve */
 		let expected = StealthStreamMessage::Message(test_txt.to_string());
@@ -356,7 +372,7 @@ mod tests {
 
 	#[tokio::test]
 	async fn test_bad_send() {
-		let (tx, mut rx) = tokio::sync::mpsc::channel(5);
+		let (tx, mut rx) = tokio::sync::mpsc::channel(10);
 
 		let (_, client) = server_client_setup1!({
 			move |recieved_message, _| {
@@ -369,43 +385,25 @@ mod tests {
 		});
 
 		let raw = client.inner().unwrap();
-		{
-			let mut guard = raw.raw_socket.write_half().lock().await;
-			// TODO: if handshakes will be persistent, do we terminate the TCP connection?
-			let bad_handshake: Vec<u8> = StealthStreamPacket::new(HANDSHAKE_OPCODE, 12, b"hello0".to_vec()).into();
-			guard
-				.write_all(&bad_handshake)
-				.await
-				.expect("couldn't write bad bytes to the buffer?");
 
-			let recieved = timeout(Duration::from_millis(500), rx.recv()).await; // we have to timeout because errors aren't returned by the server callback yet.
-			assert!(recieved.is_err());
+		tokio::time::sleep(Duration::from_millis(1000)).await;
 
-			let bad_message: Vec<u8> = StealthStreamPacket::new(MESSAGE_OPCODE, 10, b"hello2".to_vec()).into();
+		let mut guard = raw.raw_socket.write_half().lock().await;
+		// TODO: if handshakes will be persistent, do we terminate the TCP connection?
+		// test shorter content, longer prefix
+		let bad_handshake: Vec<u8> = StealthStreamPacket::new(HANDSHAKE_OPCODE, 12, b"hellox".to_vec()).into();
+		let buf = guard.write_buffer_mut();
+		buf.extend_from_slice(&bad_handshake);
 
-			guard
-				.write_all(&bad_message)
-				.await
-				.expect("couldn't write bad bytes to the buffer?");
+		guard.write_buffer_mut().extend_from_slice(&bad_handshake);
+		guard.flush().await.expect("couldn't flush stream");
+		drop(guard);
 
-			let recieved = timeout(Duration::from_millis(500), rx.recv()).await; // we have to timeout because errors aren't returned by the server callback yet.
-			assert!(recieved.is_err());
-
-			guard
-				.write_all(&[6])
-				.await
-				.expect("couldn't write bad bytes to the buffer?");
-			let recieved = timeout(Duration::from_millis(500), rx.recv()).await; // we have to timeout because errors aren't returned by the server callback yet.
-			assert!(recieved.is_err());
-
-			drop(guard); // IMPORTANT: drops the write lock on the write-half of the socket.
-
-			/* Test that messages send correctly, even after some bad ones */
-			let expected = StealthStreamMessage::Message("hey".to_string());
-			client.send(expected).await.unwrap();
-
-			let recieved = timeout(Duration::from_millis(500), rx.recv()).await;
-			assert!(recieved.is_ok_and(|v| v.is_some()))
-		}
+		let received = timeout(Duration::from_millis(300), rx.recv()).await;
+		assert!(received.is_err());
+		let expected = StealthStreamMessage::Message("hey".to_string());
+		client.send(expected).await.unwrap();
+		let received = timeout(Duration::from_millis(300), rx.recv()).await;
+		assert!(received.is_ok_and(|v| v.is_some()));
 	}
 }

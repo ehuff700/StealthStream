@@ -1,19 +1,13 @@
 #![allow(dead_code)]
-use super::StealthStreamPacketErrors;
+use super::{
+	constants::{
+		ACKNOWLEDGEMENT_OPCODE, BEGINNING_FLAG, BINARY_OPCODE, COMPLETION_FLAG, CONTINUATION_FLAG, END_FLAG,
+		ERROR_OPCODE, GOODBYE_OPCODE, HANDSHAKE_OPCODE, HEARTBEAT_OPCODE,
+	},
+	StealthStreamPacketErrors,
+};
 
-const COMPLETION_FLAG: u8 = 0x0;
-const BEGINNING_FLAG: u8 = 0x1;
-const CONTINUATION_FLAG: u8 = 0x2;
-const END_FLAG: u8 = 0x3;
-
-const HANDSHAKE_OPCODE: u8 = 0x0;
-const HEARTBEAT_OPCODE: u8 = 0x1;
-const GOODBYE_OPCODE: u8 = 0x2;
-const BINARY_OPCODE: u8 = 0x3;
-const ACKNOWLEDGEMENT_OPCODE: u8 = 0x4;
-const ERROR_OPCODE: u8 = 0x5; // TODO: move these codes to constants.rs
-
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 #[repr(u8)]
 /// Frame Opcodes represent the different types of messages that can be sent by
 /// the client or server. They are the first byte of a

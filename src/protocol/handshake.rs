@@ -21,7 +21,7 @@ pub struct Handshake {
 
 impl Handshake {
 	pub async fn start_server_handshake(client: &Arc<RawClient>) -> ServerResult<()> {
-		let result = client.recieve().await; // TODO: implement timeout
+		let result = client.receive().await.unwrap(); // TODO: implement timeout
 		match result {
 			Ok(StealthStreamMessage::Handshake { version, .. }) => {
 				debug!("Received version {} handshake from {:?}", version, client.peer_address());
@@ -30,7 +30,7 @@ impl Handshake {
 				info!("Upgraded connection to StealthStream for client {:?}", client.peer_address());
 				Ok(())
 			},
-			Err(e) => Err(e),
+			Err(e) => Err(e)?,
 			Ok(_) => Err(ServerErrors::InvalidHandshake(HandshakeErrors::SkippedHandshake))?,
 		}
 	}
@@ -92,7 +92,7 @@ impl From<Handshake> for StealthStreamMessage {
 #[derive(Debug, Error)]
 pub enum HandshakeErrors {
 	ArbitraryBytes,
-	BufferReadError(#[from] std::io::Error),
+	BufferReadError(#[from] tokio::io::Error),
 	InvalidSessionId(Uuid),
 	UnsupportedVersion(u8),
 	SkippedHandshake,

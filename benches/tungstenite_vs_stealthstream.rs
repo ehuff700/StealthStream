@@ -107,7 +107,7 @@ fn stealthstream_benchmark(c: &mut Criterion) {
 					.await
 					.expect("Couldn't send message from client");
 
-				if let Err(e) = client.inner().unwrap().recieve().await {
+				if let Some(Err(e)) = client.inner().unwrap().receive().await {
 					panic!("Error recieving message: {:?}", e);
 				}
 				//client.disconnect().await.expect("couldn't disconnect");
