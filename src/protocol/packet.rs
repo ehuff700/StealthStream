@@ -1,8 +1,7 @@
-#[cfg(unix)]
-use arbitrary::Arbitrary;
 use bytes::{Buf, BufMut, BytesMut};
 use thiserror::Error;
 use tokio_util::codec::{Decoder, Encoder};
+
 #[cfg(test)]
 use tracing::debug;
 
@@ -52,11 +51,17 @@ impl StealthStreamPacket {
 	}
 
 	// FIXME
-	pub fn opcode(&self) -> u8 { self.opcode.clone() as u8 }
+	pub fn opcode(&self) -> u8 {
+		self.opcode.clone() as u8
+	}
 
-	pub fn length(&self) -> u16 { self.length as u16 }
+	pub fn length(&self) -> u16 {
+		self.length as u16
+	}
 
-	pub fn content(&self) -> &[u8] { &self.content }
+	pub fn content(&self) -> &[u8] {
+		&self.content
+	}
 }
 
 impl From<StealthStreamMessage> for StealthStreamPacket {
@@ -92,6 +97,31 @@ impl From<StealthStreamPacket> for Vec<u8> {
 /// the underlying stream.
 #[derive(Debug)]
 pub struct StealthStreamCodec;
+impl StealthStreamCodec {
+	fn normal_decode(&mut self, src: &mut BytesMut) -> Result<Option<Vec<u8>>, StealthStreamPacketError> {
+		if src.len() < 2 {
+			return Err(StealthStreamPacketError::LengthPrefixMissing);
+		}
+
+		let length = src.get_u32_le() as usize;
+		if length > MAX {
+			return Err(StealthStreamPacketError::LengthOutOfBounds(length));
+		}
+
+		if src.len() < length {
+			src.reserve(length - src.len());
+			return Ok(None);
+		}
+
+		let content = src[0..length].to_vec();
+		// Advance the cursor by the length of the buffer.
+		// The reason we don't use `length` here is because if the length of the data
+		// was less than the length prefix, the cursor would get stuck and subsequent
+		// reads would be broken.
+		src.advance(src.len());
+		Ok(Some(content))
+	}
+}
 
 impl Decoder for StealthStreamCodec {
 	type Error = StealthStreamPacketError;
@@ -107,6 +137,13 @@ impl Decoder for StealthStreamCodec {
 		let flag = FrameFlags::try_from(src[1])?;
 		src.advance(2);
 
+		if opcode.is_data_frame() {
+			match flag {
+				FrameFlags::Complete => (),
+				FrameFlags::End => (),
+				_ => {},
+			}
+		}
 		if src.len() < 2 {
 			return Err(StealthStreamPacketError::LengthPrefixMissing);
 		}

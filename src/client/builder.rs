@@ -25,6 +25,11 @@ pub struct ClientBuilder {
 	/// parameter is not specified, A default event handler which simply logs
 	/// the message will be used.
 	pub(crate) event_handler: Option<Arc<dyn MessageCallback>>,
+
+	/// Simple boolean to indicate whether or not the client should skip certificate validation.
+	/// This should only be used for testing purposes **AND IS NOT SAFE** for production use.
+	#[cfg(feature = "tls")]
+	pub(crate) skip_certificate_validation: bool,
 }
 
 impl ClientBuilder {
@@ -34,6 +39,8 @@ impl ClientBuilder {
 			reconnect_interval: None, // TODO: implement exponential backoff
 			reconnect_attempts: 10,
 			event_handler: None,
+			#[cfg(feature = "tls")]
+			skip_certificate_validation: false,
 		}
 	}
 
@@ -62,12 +69,21 @@ impl ClientBuilder {
 		self
 	}
 
-	// TODO: implement on close/error? Or leave that up to the implementation?
+	/// Determines whether or not the client should skip certificate validation.
+	///
+	/// Skipping certificate validation should only be used for testing purposes **AND IS NOT SAFE** for production use.
+	pub fn skip_certificate_validation(&mut self, value: bool) -> &mut Self {
+		self.skip_certificate_validation = value;
+		self
+	}
 
-	pub fn build(self) -> Client { self.into() }
+	// TODO: implement on close/error? Or leave that up to the implementation?
+	pub fn build(self) -> Client {
+		self.into()
+	}
 
 	/// Default event handler which simply logs the message.
-	pub (crate) fn default_event_handler() -> Arc<dyn MessageCallback> {
+	pub(crate) fn default_event_handler() -> Arc<dyn MessageCallback> {
 		let handler = |message: StealthStreamMessage, _: Arc<RawClient>| {
 			pin_callback!({
 				debug!(target: "default_event_handler", "Received message: {:?}", message);
@@ -78,5 +94,7 @@ impl ClientBuilder {
 }
 
 impl Default for ClientBuilder {
-	fn default() -> Self { Self::new() }
+	fn default() -> Self {
+		Self::new()
+	}
 }

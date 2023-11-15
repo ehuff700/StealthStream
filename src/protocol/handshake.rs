@@ -1,4 +1,4 @@
-use std::{fmt::Display, io::Read, sync::Arc};
+use std::{fmt::Display, io::Read, sync::Arc, time::Duration};
 
 use thiserror::Error;
 use tracing::{debug, info};
@@ -6,11 +6,11 @@ use uuid::Uuid;
 
 use super::{
 	constants::{DEFAULT_HANDSHAKE_LENGTH, HANDSHAKE_LENGTH_WITH_SESSION_ID, SUPPORTED_VERSIONS},
-	StealthStreamMessage,
+	StealthStreamMessage, StealthStreamPacketError,
 };
 use crate::{
 	client::{Client, ClientResult, RawClient},
-	errors::ServerErrors,
+	errors::{Error, ServerErrors},
 	server::ServerResult,
 };
 
@@ -21,17 +21,25 @@ pub struct Handshake {
 
 impl Handshake {
 	pub async fn start_server_handshake(client: &Arc<RawClient>) -> ServerResult<()> {
-		let result = client.receive().await.unwrap(); // TODO: implement timeout
-		match result {
-			Ok(StealthStreamMessage::Handshake { version, .. }) => {
-				debug!("Received version {} handshake from {:?}", version, client.peer_address());
+		let result = tokio::time::timeout(Duration::from_millis(200), client.receive())
+			.await
+			.map_err(|_| ServerErrors::from(HandshakeErrors::HandshakeTimeout))?;
 
-				// TODO: do something with session_id
-				info!("Upgraded connection to StealthStream for client {:?}", client.peer_address());
-				Ok(())
+		match result {
+			Some(message) => {
+				match message {
+					Ok(StealthStreamMessage::Handshake { version, .. }) => {
+						debug!("Received version {} handshake from {:?}", version, client.peer_address());
+
+						// TODO: do something with session_id
+						info!("Upgraded connection to StealthStream for client {:?}", client.peer_address());
+						Ok(())
+					},
+					Err(e) => Err(e)?,
+					Ok(_) => Err(ServerErrors::from(HandshakeErrors::SkippedHandshake))?,
+				}
 			},
-			Err(e) => Err(e)?,
-			Ok(_) => Err(ServerErrors::InvalidHandshake(HandshakeErrors::SkippedHandshake))?,
+			None => Err(Error::from(StealthStreamPacketError::StreamClosed)),
 		}
 	}
 
@@ -92,6 +100,7 @@ impl From<Handshake> for StealthStreamMessage {
 #[derive(Debug, Error)]
 pub enum HandshakeErrors {
 	ArbitraryBytes,
+	HandshakeTimeout,
 	BufferReadError(#[from] tokio::io::Error),
 	InvalidSessionId(Uuid),
 	UnsupportedVersion(u8),
@@ -101,6 +110,7 @@ pub enum HandshakeErrors {
 impl Display for HandshakeErrors {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		match self {
+			HandshakeErrors::HandshakeTimeout => write!(f, "Handshake not received within the configured timeout"),
 			HandshakeErrors::ArbitraryBytes => write!(f, "Arbitrary Bytes detected"),
 			HandshakeErrors::InvalidSessionId(uuid) => write!(f, "Invalid Session ID: {}", uuid),
 			HandshakeErrors::UnsupportedVersion(version) => write!(f, "Unsupported Version: {}", version),

@@ -23,6 +23,8 @@ async fn main() -> Result<()> {
 
 	let server = ServerBuilder::default()
 		.address("0.0.0.0".parse::<IpAddr>().unwrap())
+		.cert_file_path("/Users/ehuff/Documents/VsCodeProjects/TcpTest/stealthstream/examples/server/cert.pem")
+		.key_file_path("/Users/ehuff/Documents/VsCodeProjects/TcpTest/stealthstream/examples/server/key.pem")
 		.with_event_handler(|message_type, client| {
 			pin_callback!({
 				callback_function(message_type, client).await;

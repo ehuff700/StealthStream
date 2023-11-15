@@ -8,11 +8,17 @@ use std::{
 };
 
 use anyhow::anyhow;
+use rustls::{
+	client::{ServerCertVerified, ServerCertVerifier},
+	RootCertStore, ServerName,
+};
 use tokio::{net::TcpStream, signal};
+use tokio_rustls::{TlsConnector, TlsStream};
 use tracing::error;
 use uuid::Uuid;
 
 use super::ClientBuilder;
+use crate::ServerTlsStream;
 use crate::{
 	errors::ClientErrors,
 	protocol::{
@@ -21,8 +27,18 @@ use crate::{
 	server::MessageCallback,
 	StealthStreamResult,
 };
-
 pub type ClientResult<T> = std::result::Result<T, ClientErrors>;
+
+/// TODO: fix this override / refactor?
+struct CertVerifier;
+impl ServerCertVerifier for CertVerifier {
+	fn verify_server_cert(
+		&self, _end_entity: &rustls::Certificate, _intermediates: &[rustls::Certificate], _server_name: &ServerName,
+		_scts: &mut dyn Iterator<Item = &[u8]>, _ocsp_response: &[u8], _now: std::time::SystemTime,
+	) -> Result<rustls::client::ServerCertVerified, rustls::Error> {
+		Ok(ServerCertVerified::assertion())
+	}
+}
 
 #[derive(Debug, Clone)]
 /// Used to store the address context of a [SocketAddr]
@@ -49,22 +65,71 @@ pub struct RawClient {
 
 impl RawClient {
 	/// Used by builder functions to create a new [RawClient]
-	pub(crate) async fn new(address: SocketAddr, peer_address: AddressContext) -> ClientResult<Self> {
-		let raw_socket = Arc::new(TcpStream::connect(address).await?.into());
-		let connection_state = Arc::new(AtomicBool::new(true));
+	pub(crate) async fn new(
+		address: SocketAddr, peer_address: AddressContext, _skip_certificate_validation: Option<bool>,
+	) -> ClientResult<Self> {
+		#[cfg(feature = "tls")]
+		{
+			let _domain = "example.com"; // TODO: implement domain resolution and skip certificate validation
+			let stream = TcpStream::connect(address).await?;
+			let mut config = rustls::ClientConfig::builder()
+				.with_safe_defaults()
+				.with_root_certificates(RootCertStore::empty())
+				.with_no_client_auth(); // i guess this was previously the default?
+			config.dangerous().set_certificate_verifier(Arc::new(CertVerifier));
 
-		Ok(Self {
-			raw_socket,
-			connection_state,
-			peer_address,
-		})
+			let connector = TlsConnector::from(Arc::new(config));
+
+			let tls_stream = connector
+				.connect(ServerName::try_from("example.com").expect("invalid DNS name"), stream)
+				.await?;
+			let abstracted = TlsStream::from(tls_stream);
+
+			let raw_socket: Arc<StealthStream> = Arc::new(abstracted.into());
+			let connection_state = Arc::new(AtomicBool::new(true));
+
+			Ok(Self {
+				raw_socket,
+				connection_state,
+				peer_address,
+			})
+		}
+
+		#[cfg(not(feature = "tls"))]
+		{
+			let raw_socket = Arc::new(TcpStream::connect(address).await?.into());
+			let connection_state = Arc::new(AtomicBool::new(true));
+
+			Ok(Self {
+				raw_socket,
+				connection_state,
+				peer_address,
+			})
+		}
 	}
 
+	#[cfg(not(feature = "tls"))]
 	/// Creates a new [RawClient] from a [TcpStream] and
 	/// [SocketAddr].
 	pub(crate) fn from_stream(socket: TcpStream, address: SocketAddr) -> Self {
 		let connection_state = Arc::new(AtomicBool::new(true));
 		let raw_socket = Arc::new(socket.into());
+
+		Self {
+			raw_socket,
+			peer_address: AddressContext::ClientAddress(address),
+			connection_state,
+		}
+	}
+
+	#[cfg(feature = "tls")]
+	/// Creates a new [RawClient] from a [TlsStream] and
+	/// [SocketAddr].
+	pub(crate) fn from_tls_stream(socket: ServerTlsStream<TcpStream>, address: SocketAddr) -> Self {
+		use crate::TlsStreamEnum;
+
+		let connection_state = Arc::new(AtomicBool::new(true));
+		let raw_socket = Arc::new(TlsStreamEnum::from(socket).into());
 
 		Self {
 			raw_socket,
@@ -112,11 +177,17 @@ impl RawClient {
 	}
 
 	/* Getters */
-	pub fn socket(&self) -> &StealthStream { &self.raw_socket }
+	pub fn socket(&self) -> &StealthStream {
+		&self.raw_socket
+	}
 
-	pub fn peer_address(&self) -> &AddressContext { &self.peer_address }
+	pub fn peer_address(&self) -> &AddressContext {
+		&self.peer_address
+	}
 
-	pub fn is_connected(&self) -> bool { self.connection_state.load(Ordering::SeqCst) }
+	pub fn is_connected(&self) -> bool {
+		self.connection_state.load(Ordering::SeqCst)
+	}
 }
 
 #[derive(Clone)]
@@ -139,6 +210,9 @@ pub struct Client {
 	/// Custom event handler defined by the client for use in recieving messages
 	/// from the server.
 	event_handler: Arc<dyn MessageCallback>,
+	/// Whether or not the client should skip certificate validation.
+	#[cfg(feature = "tls")]
+	skip_certificate_validation: bool,
 }
 
 impl Client {
@@ -149,7 +223,13 @@ impl Client {
 	{
 		let address = addr.to_socket_addrs()?.next().unwrap(); // TODO: fix this
 		let peer_address = AddressContext::ServerAddress(address);
-		let inner = RawClient::new(address, peer_address).await?;
+
+		let inner = if cfg!(feature = "tls") {
+			RawClient::new(address, peer_address, Some(self.skip_certificate_validation)).await?
+		} else {
+			RawClient::new(address, peer_address, None).await?
+		};
+
 		self.inner = Some(Arc::new(inner));
 
 		Handshake::start_client_handshake(self).await?;
@@ -170,7 +250,9 @@ impl Client {
 	}
 
 	/// Sends a message to/from the client to the stream.
-	pub async fn send(&self, message: StealthStreamMessage) -> ClientResult<()> { self.inner()?.send(message).await }
+	pub async fn send(&self, message: StealthStreamMessage) -> ClientResult<()> {
+		self.inner()?.send(message).await
+	}
 
 	/// Spawns a new tokio task which listens for incoming messages.
 	///
@@ -212,7 +294,9 @@ impl Client {
 	///
 	/// This method will additionally close the underlying socket, preventing
 	/// any messages from being sent.
-	pub async fn disconnect(&self) -> ClientResult<()> { self.inner()?.disconnect().await }
+	pub async fn disconnect(&self) -> ClientResult<()> {
+		self.inner()?.disconnect().await
+	}
 
 	/// Functionally the same as `disconnect`, but with a reason.
 	pub async fn disconnect_with_reason(&self, code: impl Into<GoodbyeCodes>, reason: &str) -> ClientResult<()> {
@@ -230,9 +314,9 @@ impl Client {
 
 	/// Convenience method used internally by the crate to return the inner
 	/// when we know it's valid.
-	pub fn inner(&self) -> ClientResult<&Arc<RawClient>> {
+	pub fn inner(&self) -> ClientResult<Arc<RawClient>> {
 		if let Some(inner) = self.inner.as_ref() {
-			Ok(inner)
+			Ok(inner.clone())
 		} else {
 			Err(ClientErrors::ConnectionError(
 				anyhow!("Client is currently not connected").into(),
@@ -252,6 +336,8 @@ impl From<ClientBuilder> for Client {
 			event_handler: value
 				.event_handler
 				.unwrap_or_else(|| ClientBuilder::default_event_handler()),
+			#[cfg(feature = "tls")]
+			skip_certificate_validation: value.skip_certificate_validation,
 		}
 	}
 }

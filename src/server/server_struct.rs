@@ -1,6 +1,8 @@
 use std::{net::SocketAddr, process, sync::Arc};
 
+use rustls::ServerConfig;
 use tokio::{net::TcpListener, signal, sync::mpsc};
+use tokio_rustls::TlsAcceptor;
 use tracing::{debug, error, info};
 
 use super::{MessageCallback, ServerResult};
@@ -14,12 +16,14 @@ pub struct Server {
 	address: SocketAddr,
 	poke_delay: u64,
 	event_handler: Arc<dyn MessageCallback>,
+	#[cfg(feature = "tls")]
+	tls_config: Arc<ServerConfig>,
 }
-
 impl Server {
 	/// Used internally by the ServerBuilder to create a new [Server] instance.
 	pub(super) fn new(
 		listener: TcpListener, address: SocketAddr, poke_delay: u64, event_handler: Arc<dyn MessageCallback>,
+		server_config: Option<ServerConfig>,
 	) -> Self {
 		#[cfg(feature = "signals")] // TODO: implement this properly or not at all?
 		tokio::task::spawn({
@@ -35,6 +39,7 @@ impl Server {
 			address,
 			poke_delay,
 			event_handler,
+			tls_config: Arc::new(server_config.unwrap()),
 		}
 	}
 
@@ -44,18 +49,33 @@ impl Server {
 	/// and [SocketAddr]. This task will be responsible for reading the stream
 	/// for the lifecycle of the connection and processing messages.
 	pub async fn listen(&self) -> ServerResult<()> {
+		#[cfg(feature = "tls")]
+		let acceptor = TlsAcceptor::from(self.tls_config.clone());
+
 		loop {
 			match self.listener.accept().await {
-				Ok((socket, addr)) => {
-					debug!("Accepted connection from {:?}", addr);
+				Ok((tcp_stream, address)) => {
+					debug!("Accepted connection from {:?}", address);
 
-					let client = Arc::new(RawClient::from_stream(socket, addr));
+					#[cfg(feature = "tls")]
+					let tls_stream = match acceptor.accept(tcp_stream).await {
+						Ok(tls_stream) => tls_stream,
+						Err(e) => {
+							error!("Error accepting TLS connection: {:?}", e);
+							continue;
+						},
+					};
+
+					#[cfg(not(feature = "tls"))]
+					let client = Arc::new(RawClient::from_stream(tcp_stream, addr));
+					#[cfg(feature = "tls")]
+					let client = Arc::new(RawClient::from_tls_stream(tls_stream, address));
 					self.handle_client(client).await;
 				},
 				Err(e) => {
 					error!("Error accepting connection: {:?}", e);
 				},
-			}
+			};
 		}
 	}
 
@@ -103,7 +123,13 @@ impl Server {
 						match read_result {
 							Ok(message) => {
 								if matches!(message, StealthStreamMessage::Goodbye { .. }) {
-									read_client.disconnect().await.unwrap();
+									if let Err(e) = read_client.disconnect().await {
+										error!(
+											"Error disconnecting client ({:?}): {:?}",
+											read_client.peer_address(),
+											e
+										);
+									};
 								}
 
 								// Sends the parsed message to the write task.
@@ -124,7 +150,7 @@ impl Server {
 							},
 						};
 					}
-					debug!("server: socket closed");
+					//debug!("server: socket closed");
 				}
 			}
 		});
@@ -148,7 +174,9 @@ impl Server {
 	}
 
 	/* Getters */
-	pub fn address(&self) -> SocketAddr { self.address }
+	pub fn address(&self) -> SocketAddr {
+		self.address
+	}
 }
 
 #[cfg(test)]
@@ -158,7 +186,6 @@ mod tests {
 	use rand::Rng;
 	use tokio::{io::AsyncWriteExt, net::TcpStream, time::timeout};
 	use tracing::info;
-	use tracing_subscriber::filter::LevelFilter;
 
 	use super::Server;
 	use crate::{
@@ -233,7 +260,10 @@ mod tests {
 	#[tokio::test]
 	async fn test_early_closure() {
 		let (tx, mut rx) = tokio::sync::mpsc::channel(5);
-		tracing_subscriber::fmt().with_max_level(LevelFilter::DEBUG).init();
+		/*tracing_subscriber::fmt()
+		.with_max_level(tracing_subscriber::filter::LevelFilter::DEBUG)
+		.init();*/
+
 		let (server, c) = server_client_setup!({
 			move |recieved_message, _| {
 				let tx = tx.clone();
@@ -252,6 +282,7 @@ mod tests {
 			version: 1,
 			session_id: None,
 		};
+
 		let bytes: Vec<u8> = StealthStreamPacket::from(handshake).into();
 
 		raw_stream
@@ -264,7 +295,7 @@ mod tests {
 			.await
 			.expect("error shutting down the raw TcpStream");
 
-		let raw_stream_result = timeout(Duration::from_millis(500), rx.recv()).await; // This should fall with a "StreamClosed" error
+		let raw_stream_result = timeout(Duration::from_millis(500), rx.recv()).await;
 		assert!(raw_stream_result.is_err(), "Somehow recieved a successful message?");
 
 		/* Test Successful Recieve */
