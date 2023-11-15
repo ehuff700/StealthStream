@@ -1,20 +1,36 @@
 use futures_util::{SinkExt, StreamExt};
 use tokio::{
-	net::{
-		tcp::{OwnedReadHalf, OwnedWriteHalf},
-		TcpStream,
-	},
+	io::{split, ReadHalf, WriteHalf},
+	net::TcpStream,
 	sync::Mutex,
 };
+
+#[cfg(not(feature = "tls"))]
+use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
+
+use tokio_rustls::TlsStream;
 use tokio_util::codec::{FramedRead, FramedWrite};
 
 use super::{StealthStreamCodec, StealthStreamPacket, StealthStreamPacketError};
 use crate::protocol::StealthStreamMessage;
 
 #[derive(Debug)]
+#[cfg(not(feature = "tls"))]
 pub struct StealthStream {
 	writer: Mutex<FramedWrite<OwnedWriteHalf, StealthStreamCodec>>,
 	reader: Mutex<FramedRead<OwnedReadHalf, StealthStreamCodec>>,
+}
+
+#[cfg(feature = "tls")]
+pub type OwnedTlsWriteHalf = WriteHalf<TlsStream<TcpStream>>;
+#[cfg(feature = "tls")]
+pub type OwnedTlsReadHalf = ReadHalf<TlsStream<TcpStream>>;
+
+#[cfg(feature = "tls")]
+#[derive(Debug)]
+pub struct StealthStream {
+	writer: Mutex<FramedWrite<OwnedTlsWriteHalf, StealthStreamCodec>>,
+	reader: Mutex<FramedRead<OwnedTlsReadHalf, StealthStreamCodec>>,
 }
 
 impl StealthStream {
@@ -68,13 +84,27 @@ impl StealthStream {
 		Ok(())
 	}
 
-	/// Used internally for fuzzing input.
-	#[cfg(test)]
-	pub(crate) fn writer(&self) -> &Mutex<FramedWrite<OwnedWriteHalf, StealthStreamCodec>> { &self.writer }
+	/* Getters */
+	#[cfg(not(feature = "tls"))]
+	pub fn writer(&self) -> &Mutex<FramedWrite<OwnedWriteHalf, StealthStreamCodec>> {
+		&self.writer
+	}
+	#[cfg(not(feature = "tls"))]
+	pub fn reader(&self) -> &Mutex<FramedRead<OwnedReadHalf, StealthStreamCodec>> {
+		&self.reader
+	}
 
-	pub fn reader(&self) -> &Mutex<FramedRead<OwnedReadHalf, StealthStreamCodec>> { &self.reader }
+	#[cfg(feature = "tls")]
+	pub fn writer(&self) -> &Mutex<FramedWrite<OwnedTlsWriteHalf, StealthStreamCodec>> {
+		&self.writer
+	}
+	#[cfg(feature = "tls")]
+	pub fn reader(&self) -> &Mutex<FramedRead<OwnedTlsReadHalf, StealthStreamCodec>> {
+		&self.reader
+	}
 }
 
+#[cfg(not(feature = "tls"))]
 impl From<TcpStream> for StealthStream {
 	fn from(stream: TcpStream) -> Self {
 		let (read_half, write_half) = stream.into_split();
@@ -83,6 +113,19 @@ impl From<TcpStream> for StealthStream {
 		let framed_writer: FramedWrite<OwnedWriteHalf, StealthStreamCodec> =
 			FramedWrite::new(write_half, StealthStreamCodec);
 
+		Self {
+			writer: Mutex::new(framed_writer),
+			reader: Mutex::new(framed_reader),
+		}
+	}
+}
+
+#[cfg(feature = "tls")]
+impl From<TlsStream<TcpStream>> for StealthStream {
+	fn from(stream: TlsStream<TcpStream>) -> Self {
+		let (read_half, write_half) = split(stream);
+		let framed_reader = FramedRead::new(read_half, StealthStreamCodec);
+		let framed_writer = FramedWrite::new(write_half, StealthStreamCodec);
 		Self {
 			writer: Mutex::new(framed_writer),
 			reader: Mutex::new(framed_reader),

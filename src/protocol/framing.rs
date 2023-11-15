@@ -27,12 +27,12 @@ pub enum FrameOpcodes {
 
 impl FrameOpcodes {
 	/// Indicates whether the frame opcode is a control frame.
-	fn is_control_frame(&self) -> bool {
+	pub fn is_control_frame(&self) -> bool {
 		matches!(self, FrameOpcodes::Handshake | FrameOpcodes::Heartbeat | FrameOpcodes::Goodbye)
 	}
 
 	/// Indicates whether the frame opcode is a data frame.
-	fn is_data_frame(&self) -> bool {
+	pub fn is_data_frame(&self) -> bool {
 		matches!(self, FrameOpcodes::Binary | FrameOpcodes::Acknowledgement | FrameOpcodes::Error)
 	}
 }

@@ -98,47 +98,30 @@ fn stealthstream_benchmark(c: &mut Criterion) {
 		client
 	});
 
-	std::thread::sleep(Duration::from_millis(100));
+	let inner = client.inner().unwrap();
+	let (reader, writer) = (inner.socket().reader(), inner.socket().writer());
+	let (reader_clone, writer_clone) = (Arc::new(reader), Arc::new(writer));
 
-	let inner = client.inner().unwrap().socket();
+	std::thread::sleep(Duration::from_millis(100));
 	let test_message = generate_long_utf8_string(TEST_MESSAGE_LENGTH);
 
 	group.bench_with_input("stealthstream", &test_message, |b, i| {
-		b.to_async(&rt).iter(|| async {
-			client
-				.send(StealthStreamMessage::Message(i.to_string()))
-				.await
-				.expect("Couldn't send message from client");
-			client.receive().await;
+		let cloned = (reader_clone.clone(), writer_clone.clone());
+
+		b.to_async(&rt).iter(move || {
+			let (reader, writer) = cloned.clone();
+			async move {
+				let mut writer_guard = writer.lock().await;
+				let mut reader_guard = reader.lock().await;
+
+				let _ = writer_guard
+					.send(StealthStreamMessage::Message(i.to_string()).into())
+					.await;
+				drop(writer_guard);
+				let _ = reader_guard.next().await;
+				drop(reader_guard);
+			}
 		})
-	});
-
-	group.bench_function("stealthstream", |b| {
-		b.to_async(&rt).iter_batched(
-			|| generate_long_utf8_string(TEST_MESSAGE_LENGTH),
-			|message| async {
-				client
-					.send(StealthStreamMessage::Message(message))
-					.await
-					.expect("Couldn't send message from client");
-
-				{
-					let mut guard = inner.reader().lock().await;
-					if let Some(msg) = guard.next().await {
-						match msg {
-							Ok(_) => {},
-							Err(e) => panic!("Error during the websocket communication: {:?}", e),
-						}
-					}
-				}
-
-				/*if let Some(Err(e)) = client.inner().unwrap().receive().await {
-					panic!("Error recieving message: {:?}", e);
-				}*/
-				//client.disconnect().await.expect("couldn't disconnect");
-			},
-			criterion::BatchSize::LargeInput,
-		);
 	});
 	group.finish();
 }
