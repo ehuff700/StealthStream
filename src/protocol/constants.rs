@@ -8,9 +8,15 @@ pub const END_FLAG: u8 = 0x3;
 pub const HANDSHAKE_OPCODE: u8 = 0x0;
 pub const HEARTBEAT_OPCODE: u8 = 0x1;
 pub const GOODBYE_OPCODE: u8 = 0x2;
-pub const BINARY_OPCODE: u8 = 0x3;
-pub const ACKNOWLEDGEMENT_OPCODE: u8 = 0x4;
-pub const ERROR_OPCODE: u8 = 0x5;
+pub const MESSAGE_OPCODE: u8 = 0x3;
+pub const ACKNOWLEDGEMENT_OPCODE: u8 = 0x4; // TODO: implement
+pub const ERROR_OPCODE: u8 = 0x5; // TODO: implement
+
+/// The maximum length of a complete frame, in bytes.
+pub const MAX_COMPLETE_FRAME_LENGTH: u32 = 16 * 1024;
+/// The maximum length of a message that can be sent over a Stealth Stream.
+pub const MAX_MESSAGE_LENGTH: u32 = 16 * 1024 * 1024;
+pub const HEADER_LENGTH: usize = 6;
 
 /* Goodbye Codes */
 /// Indicates a graceful connection closure initiated by the client or the

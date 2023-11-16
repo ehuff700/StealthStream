@@ -1,7 +1,9 @@
 use std::{net::SocketAddr, process, sync::Arc};
 
+#[cfg(feature = "tls")]
 use rustls::ServerConfig;
 use tokio::{net::TcpListener, signal, sync::mpsc};
+#[cfg(feature = "tls")]
 use tokio_rustls::TlsAcceptor;
 use tracing::{debug, error, info};
 
@@ -23,7 +25,7 @@ impl Server {
 	/// Used internally by the ServerBuilder to create a new [Server] instance.
 	pub(super) fn new(
 		listener: TcpListener, address: SocketAddr, poke_delay: u64, event_handler: Arc<dyn MessageCallback>,
-		server_config: Option<ServerConfig>,
+		#[cfg(feature = "tls")] server_config: Option<ServerConfig>,
 	) -> Self {
 		#[cfg(feature = "signals")] // TODO: implement this properly or not at all?
 		tokio::task::spawn({
@@ -39,6 +41,7 @@ impl Server {
 			address,
 			poke_delay,
 			event_handler,
+			#[cfg(feature = "tls")]
 			tls_config: Arc::new(server_config.unwrap()),
 		}
 	}
@@ -67,7 +70,7 @@ impl Server {
 					};
 
 					#[cfg(not(feature = "tls"))]
-					let client = Arc::new(RawClient::from_stream(tcp_stream, addr));
+					let client = Arc::new(RawClient::from_stream(tcp_stream, address));
 					#[cfg(feature = "tls")]
 					let client = Arc::new(RawClient::from_tls_stream(tls_stream, address));
 					self.handle_client(client).await;
@@ -122,7 +125,7 @@ impl Server {
 					while let Some(read_result) = read_client.receive().await {
 						match read_result {
 							Ok(message) => {
-								if matches!(message, StealthStreamMessage::Goodbye { .. }) {
+								if matches!(message, StealthStreamMessage::Goodbye(_)) {
 									if let Err(e) = read_client.disconnect().await {
 										error!(
 											"Error disconnecting client ({:?}): {:?}",
@@ -190,7 +193,7 @@ mod tests {
 	use super::Server;
 	use crate::{
 		pin_callback,
-		protocol::{StealthStreamMessage, StealthStreamPacket},
+		protocol::{HandshakeData, MessageData, StealthStreamMessage},
 		server::{MessageCallback, ServerBuilder},
 	};
 
@@ -278,12 +281,10 @@ mod tests {
 		let mut raw_stream = TcpStream::connect(server.address())
 			.await
 			.expect("couldn't connect to server");
-		let handshake = StealthStreamMessage::Handshake {
-			version: 1,
-			session_id: None,
-		};
+		let handshake = StealthStreamMessage::Handshake(HandshakeData::new(1, None));
+		let mut test = handshake.to_message();
 
-		let bytes: Vec<u8> = StealthStreamPacket::from(handshake).into();
+		let bytes: Vec<u8> = test.pop().unwrap().into();
 
 		raw_stream
 			.write_all(&bytes)
@@ -299,7 +300,7 @@ mod tests {
 		assert!(raw_stream_result.is_err(), "Somehow recieved a successful message?");
 
 		/* Test Successful Recieve */
-		let packet = StealthStreamMessage::Message("test".to_string());
+		let packet = StealthStreamMessage::Message(MessageData::new("test", false));
 		c.send(packet).await.expect("error sending message");
 
 		let received = rx.recv().await;
