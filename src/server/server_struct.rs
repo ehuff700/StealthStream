@@ -141,7 +141,6 @@ impl Server {
 								}
 							},
 							Err(e) => {
-								// TODO: we need to match the error here and figure out what to do with it.
 								if let StealthStreamPacketError::StreamClosed = e {
 									let _ = read_client.disconnect().await; // force disconnect, throwing away any error type
 									break;
@@ -186,23 +185,27 @@ impl Server {
 mod tests {
 	use std::{sync::Arc, time::Duration};
 
-	use rand::Rng;
-	use tokio::{io::AsyncWriteExt, net::TcpStream, time::timeout};
-	use tracing::info;
-
 	use super::Server;
+	use crate::client::ClientBuilder;
 	use crate::{
 		pin_callback,
 		protocol::{HandshakeData, MessageData, StealthStreamMessage},
 		server::{MessageCallback, ServerBuilder},
 	};
+	use rand::Rng;
+	use tokio::{io::AsyncWriteExt, net::TcpStream, time::timeout};
+	use tracing::info;
 
 	macro_rules! server_client_setup {
 		() => {{
 			let test: Option<Box<dyn MessageCallback>> = None;
-
 			let server = basic_server_setup(test).await;
-			let mut client = $crate::client::ClientBuilder::default().build();
+
+			let mut client = ClientBuilder::default();
+			#[cfg(feature = "tls")]
+			let mut client = client.skip_certificate_validation(true)
+
+			let mut client = client.build();
 			client
 				.connect(server.address())
 				.await
@@ -211,7 +214,13 @@ mod tests {
 		}};
 		($callback:block) => {{
 			let server = basic_server_setup(Some($callback)).await;
-			let mut client = $crate::client::ClientBuilder::default().build();
+			#[allow(unused_mut)]
+			let mut client = ClientBuilder::default();
+			#[cfg(feature = "tls")]
+			#[allow(unused_mut)]
+			let mut client = client.skip_certificate_validation(true);
+
+			let mut client = client.build();
 			client
 				.connect(server.address())
 				.await
@@ -220,9 +229,12 @@ mod tests {
 		}};
 		($server_callback:block, $client_callback:block) => {{
 			let server = basic_server_setup(Some($server_callback)).await;
-			let mut client = $crate::client::ClientBuilder::default()
-				.with_event_handler($client_callback)
-				.build();
+			#[allow(unused_mut)]
+			let mut client = ClientBuilder::default().with_event_handler($client_callback);
+			#[cfg(feature = "tls")]
+			let mut client = client.skip_certificate_validation(true)
+
+			let mut client = client.build();
 			client
 				.connect(server.address())
 				.await
@@ -239,6 +251,10 @@ mod tests {
 		let random_number: u16 = rng.gen_range(1000..10000);
 
 		let base_server = ServerBuilder::default().port(random_number);
+		#[cfg(feature = "tls")]
+		let base_server = base_server
+			.cert_file_path("src/test_cert.pem")
+			.key_file_path("src/test_key.pem");
 
 		let server = if let Some(callback) = callback {
 			base_server.with_event_handler(callback)

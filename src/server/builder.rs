@@ -11,7 +11,7 @@ use std::{
 };
 
 use super::{server_struct::Server, MessageCallback, ServerResult};
-use crate::{client::RawClient, pin_callback, protocol::StealthStreamMessage};
+use crate::{client::RawClient, errors::Error, pin_callback, protocol::StealthStreamMessage};
 
 #[cfg(feature = "tls")]
 use rustls::Certificate;
@@ -85,6 +85,7 @@ impl ServerBuilder {
 
 	/// Sets the file path location to the TLS certificate
 	#[cfg(feature = "tls")]
+	#[must_use]
 	pub fn cert_file_path(mut self, cert_file_path: impl AsRef<Path>) -> Self {
 		self.cert_file_path = Some(cert_file_path.as_ref().to_path_buf());
 		self
@@ -92,6 +93,7 @@ impl ServerBuilder {
 
 	/// Sets the file path location to the private key file
 	#[cfg(feature = "tls")]
+	#[must_use]
 	pub fn key_file_path(mut self, key_file_path: impl AsRef<Path>) -> Self {
 		self.key_file_path = Some(key_file_path.as_ref().to_path_buf());
 		self
@@ -111,11 +113,14 @@ impl ServerBuilder {
 				.key_file_path
 				.expect("Please provide a valid private key file path or disable TLS.");
 
-			let cert_file = &mut BufReader::new(File::open(cert_file_path)?);
-			let key_file = &mut BufReader::new(File::open(key_file_path)?);
+			let cert_file = &mut BufReader::new(File::open(cert_file_path).expect("Couldn't open cert file"));
+			let key_file = &mut BufReader::new(File::open(key_file_path).expect("Couldn't open private key file"));
 
 			let cert_chain: Vec<Certificate> = certs(cert_file)?.into_iter().map(Certificate).collect();
-			let mut keys = pkcs8_private_keys(key_file)?; // TODO: check if empty
+			let mut keys = pkcs8_private_keys(key_file)?;
+			if keys.is_empty() {
+				return Err(Error::InvalidPrivateKey);
+			}
 
 			let config = ServerConfig::builder()
 				.with_safe_defaults()

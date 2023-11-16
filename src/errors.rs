@@ -17,6 +17,11 @@ pub enum Error {
 	ServerError(#[from] ServerErrors),
 	#[error(transparent)]
 	ClientError(#[from] ClientErrors),
+
+	#[cfg(feature = "tls")]
+	#[error("Couldn't extract private key from file.")]
+	InvalidPrivateKey,
+	
 }
 
 #[derive(Debug, Error)]

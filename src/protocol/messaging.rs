@@ -193,7 +193,7 @@ impl StealthStreamMessage {
 		match self {
 			StealthStreamMessage::Handshake { .. } => HANDSHAKE_OPCODE,
 			StealthStreamMessage::Heartbeat => HEARTBEAT_OPCODE,
-			StealthStreamMessage::Message(_) => MESSAGE_OPCODE, // FIXME
+			StealthStreamMessage::Message(_) => MESSAGE_OPCODE,
 			StealthStreamMessage::Goodbye { .. } => GOODBYE_OPCODE,
 		}
 	}

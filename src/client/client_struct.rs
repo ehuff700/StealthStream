@@ -10,10 +10,12 @@ use std::{
 use anyhow::anyhow;
 
 #[cfg(feature = "tls")]
-use rustls::{
-	client::{ServerCertVerified, ServerCertVerifier},
-	RootCertStore, ServerName,
-};
+use rustls::ClientConfig;
+
+#[cfg(feature = "tls")]
+use crate::protocol::tls::{CertVerifier, ServerTlsStream};
+#[cfg(feature = "tls")]
+use rustls::{RootCertStore, ServerName};
 
 use tokio::{net::TcpStream, signal};
 #[cfg(feature = "tls")]
@@ -22,8 +24,6 @@ use tracing::error;
 use uuid::Uuid;
 
 use super::ClientBuilder;
-#[cfg(feature = "tls")]
-use crate::ServerTlsStream;
 use crate::{
 	errors::ClientErrors,
 	protocol::{
@@ -33,19 +33,6 @@ use crate::{
 	StealthStreamResult,
 };
 pub type ClientResult<T> = std::result::Result<T, ClientErrors>;
-
-/// TODO: fix this override / refactor?
-#[cfg(feature = "tls")]
-struct CertVerifier;
-#[cfg(feature = "tls")]
-impl ServerCertVerifier for CertVerifier {
-	fn verify_server_cert(
-		&self, _end_entity: &rustls::Certificate, _intermediates: &[rustls::Certificate], _server_name: &ServerName,
-		_scts: &mut dyn Iterator<Item = &[u8]>, _ocsp_response: &[u8], _now: std::time::SystemTime,
-	) -> Result<rustls::client::ServerCertVerified, rustls::Error> {
-		Ok(ServerCertVerified::assertion())
-	}
-}
 
 #[derive(Debug, Clone)]
 /// Used to store the address context of a [SocketAddr]
@@ -78,21 +65,27 @@ impl RawClient {
 	) -> ClientResult<Self> {
 		#[cfg(feature = "tls")]
 		{
-			let _domain = "example.com"; // TODO: implement domain resolution and skip certificate validation
+			// TODO: implement domain resolution and skip certificate validation
 			let stream = TcpStream::connect(address).await?;
-			let mut config = rustls::ClientConfig::builder()
+
+			let mut config = ClientConfig::builder()
 				.with_safe_defaults()
 				.with_root_certificates(RootCertStore::empty())
-				.with_no_client_auth(); // i guess this was previously the default?
-			config.dangerous().set_certificate_verifier(Arc::new(CertVerifier));
+				.with_no_client_auth();
+
+			if matches!(_skip_certificate_validation, Some(true) | None) {
+				config.dangerous().set_certificate_verifier(Arc::new(CertVerifier));
+			} else {
+				// TODO: setup proper root certificates
+			}
 
 			let connector = TlsConnector::from(Arc::new(config));
 
 			let tls_stream = connector
 				.connect(ServerName::try_from("example.com").expect("invalid DNS name"), stream)
 				.await?;
-			let abstracted = TlsStream::from(tls_stream);
 
+			let abstracted = TlsStream::from(tls_stream);
 			let raw_socket: Arc<StealthStream> = Arc::new(abstracted.into());
 			let connection_state = Arc::new(AtomicBool::new(true));
 
@@ -118,7 +111,7 @@ impl RawClient {
 
 	#[cfg(not(feature = "tls"))]
 	/// Creates a new [RawClient] from a [TcpStream] and
-	/// [SocketAddr].
+	/// [SocketAddr]. This method is typically used to create a raw client on the server side.
 	pub(crate) fn from_stream(socket: TcpStream, address: SocketAddr) -> Self {
 		let connection_state = Arc::new(AtomicBool::new(true));
 		let raw_socket = Arc::new(socket.into());
@@ -131,10 +124,10 @@ impl RawClient {
 	}
 
 	#[cfg(feature = "tls")]
-	/// Creates a new [RawClient] from a [TlsStream] and
-	/// [SocketAddr].
+	/// Creates a new [RawClient] from a [ServerTlsStream<TcpStream>] and
+	/// [SocketAddr]. This method is typically used to create a raw client on the server side.
 	pub(crate) fn from_tls_stream(socket: ServerTlsStream<TcpStream>, address: SocketAddr) -> Self {
-		use crate::TlsStreamEnum;
+		use crate::protocol::tls::TlsStreamEnum;
 
 		let connection_state = Arc::new(AtomicBool::new(true));
 		let raw_socket = Arc::new(TlsStreamEnum::from(socket).into());
@@ -235,19 +228,11 @@ impl Client {
 		let address = addr.to_socket_addrs()?.next().unwrap(); // TODO: fix this
 		let peer_address = AddressContext::ServerAddress(address);
 
-		let inner = if cfg!(feature = "tls") {
-			RawClient::new(
-				address,
-				peer_address,
-				#[cfg(feature = "tls")]
-				Some(self.skip_certificate_validation),
-			)
-			.await?
-		} else {
-			#[cfg(not(feature = "tls"))]
-			return RawClient::new(address, peer_address).await?;
-			unreachable!();
-		};
+		#[cfg(feature = "tls")]
+		let inner = RawClient::new(address, peer_address, Some(self.skip_certificate_validation)).await?;
+
+		#[cfg(not(feature = "tls"))]
+		let inner = RawClient::new(address, peer_address).await?;
 
 		self.inner = Some(Arc::new(inner));
 
@@ -382,7 +367,11 @@ mod tests {
 	macro_rules! server_client_setup1 {
 		() => {{
 			let server = basic_server_setup(|_, _| pin_callback!({})).await;
+			#[cfg(not(feature = "tls"))]
 			let mut client = ClientBuilder::default().build();
+
+			#[cfg(feature = "tls")]
+			let mut client = ClientBuilder::default().skip_certificate_validation(true).build();
 			client
 				.connect(server.address())
 				.await
@@ -391,7 +380,11 @@ mod tests {
 		}};
 		($callback:block) => {{
 			let server = basic_server_setup($callback).await;
+			#[cfg(not(feature = "tls"))]
 			let mut client = ClientBuilder::default().build();
+
+			#[cfg(feature = "tls")]
+			let mut client = ClientBuilder::default().skip_certificate_validation(true).build();
 			client
 				.connect(server.address())
 				.await
@@ -400,7 +393,15 @@ mod tests {
 		}};
 		($server_callback:block, $client_callback:block) => {{
 			let server = basic_server_setup($server_callback).await;
+			#[cfg(not(feature = "tls"))]
 			let mut client = ClientBuilder::default().with_event_handler($client_callback).build();
+
+			#[cfg(feature = "tls")]
+			let mut client = ClientBuilder::default()
+				.skip_certificate_validation(true)
+				.with_event_handler($client_callback)
+				.build();
+
 			client
 				.connect(server.address())
 				.await
@@ -415,9 +416,17 @@ mod tests {
 	{
 		let mut rng = rand::thread_rng();
 		let random_number: u16 = rng.gen_range(1000..10000);
+		#[cfg(not(feature = "tls"))]
 		let server = ServerBuilder::default()
 			.port(random_number)
 			.with_event_handler(callback);
+		#[cfg(feature = "tls")]
+		let server = ServerBuilder::default()
+			.cert_file_path("src/test_cert.pem")
+			.key_file_path("src/test_key.pem")
+			.port(random_number)
+			.with_event_handler(callback);
+
 		let server = server.build().await.expect("Couldn't build server");
 
 		let server = Arc::new(server);

@@ -46,19 +46,19 @@ impl ClientBuilder {
 
 	/// Determines whether or not a client should attempt to reconnect to the
 	/// server on disconnect.
-	pub fn should_reconnect(&mut self, should_reconnect: bool) -> &mut Self {
+	pub fn should_reconnect(mut self, should_reconnect: bool) -> Self {
 		self.should_reconnect = should_reconnect;
 		self
 	}
 
 	/// Sets the amount of time to wait between reconnection attempts.
-	pub fn reconnect_interval(&mut self, interval: Duration) -> &mut Self {
+	pub fn reconnect_interval(mut self, interval: Duration) -> Self {
 		self.reconnect_interval = Some(interval);
 		self
 	}
 
 	/// Sets the maximum number of reconnection attempts.
-	pub fn reconnect_attempts(&mut self, attempts: u32) -> &mut Self {
+	pub fn reconnect_attempts(mut self, attempts: u32) -> Self {
 		self.reconnect_attempts = attempts;
 		self
 	}
@@ -73,7 +73,7 @@ impl ClientBuilder {
 	///
 	/// Skipping certificate validation should only be used for testing purposes **AND IS NOT SAFE** for production use.
 	#[cfg(feature = "tls")]
-	pub fn skip_certificate_validation(&mut self, value: bool) -> &mut Self {
+	pub fn skip_certificate_validation(mut self, value: bool) -> Self {
 		self.skip_certificate_validation = value;
 		self
 	}
