@@ -38,7 +38,7 @@ pub enum StealthStreamPacketError {
 	#[error("packet missing length prefix")]
 	LengthPrefixMissing,
 	#[error("packet length out of bounds: {0}")]
-	LengthOutOfBounds(usize), // TODO: implement max length
+	LengthOutOfBounds(usize),
 	#[error(transparent)]
 	HandshakeError(#[from] HandshakeErrors),
 	#[error("error reading from the underlying stream: {0}")]
@@ -94,7 +94,6 @@ impl StealthStreamPacket {
 		}
 	}
 
-	// FIXME
 	pub fn opcode(&self) -> u8 {
 		self.opcode as u8
 	}
@@ -243,7 +242,6 @@ impl Encoder<StealthStreamPacket> for StealthStreamCodec {
 	type Error = StealthStreamPacketError;
 
 	fn encode(&mut self, item: StealthStreamPacket, dst: &mut BytesMut) -> Result<(), Self::Error> {
-		// TODO: implement length requirements
 		let length = u32::to_le_bytes(item.length as u32);
 
 		// Reserve space for opcode/flag/length prefix + content length

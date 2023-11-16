@@ -12,6 +12,7 @@ pub const MESSAGE_OPCODE: u8 = 0x3;
 pub const ACKNOWLEDGEMENT_OPCODE: u8 = 0x4; // TODO: implement
 pub const ERROR_OPCODE: u8 = 0x5; // TODO: implement
 
+/* Framing Constants */
 /// The maximum length of a complete frame, in bytes.
 pub const MAX_COMPLETE_FRAME_LENGTH: u32 = 16 * 1024;
 /// The maximum length of a message that can be sent over a Stealth Stream.
