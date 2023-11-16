@@ -1,8 +1,6 @@
 use bytes::{Buf, BytesMut};
-use tracing::error;
+use tracing::{debug, error};
 use uuid::Uuid;
-
-use crate::protocol::constants::{MAX_COMPLETE_FRAME_LENGTH, MAX_MESSAGE_LENGTH};
 
 use super::{
 	constants::{
@@ -11,6 +9,7 @@ use super::{
 	},
 	StealthStreamPacketError,
 };
+use crate::protocol::constants::{MAX_COMPLETE_FRAME_LENGTH, MAX_MESSAGE_LENGTH};
 
 #[derive(Debug, Clone, Copy)]
 #[repr(u8)]
@@ -82,7 +81,8 @@ pub enum FrameFlags {
 }
 
 impl FrameFlags {
-	/// Validates whether or not the parsed flags are valid for the given opcode.
+	/// Validates whether or not the parsed flags are valid for the given
+	/// opcode.
 	fn validate_flag_for_opcode(flag: &FrameFlags, opcode: &FrameOpcodes) -> Result<(), StealthStreamPacketError> {
 		// If the opcode is a control frame and the flag is not Complete
 		if opcode.is_control_frame() && !matches!(flag, FrameFlags::Complete) {
@@ -120,18 +120,35 @@ impl FrameFlags {
 	}
 }
 #[derive(Debug)]
-/// The length prefix is a 4 byte long u32 value representing the number of bytes to be read from the stream to compose the frame/message.
+/// The length prefix is a 4 byte long u32 value representing the number of
+/// bytes to be read from the stream to compose the frame/message.
 ///
-/// For frames that are NOT [FrameFlags::Beginning], the maximum length prefix is [MAX_COMPLETE_FRAME_LENGTH]. If the frame is
-/// a [FrameFlags::Beginning], the maximum length prefix is [MAX_MESSAGE_LENGTH].
+/// For frames that are NOT [FrameFlags::Beginning], the maximum length prefix
+/// is [MAX_COMPLETE_FRAME_LENGTH]. If the frame is a [FrameFlags::Beginning],
+/// the maximum length prefix is [MAX_MESSAGE_LENGTH].
 pub struct LengthPrefix(pub(crate) u32);
 impl LengthPrefix {
+	pub fn try_from_v2(src: &mut BytesMut) -> Result<Self, StealthStreamPacketError> {
+		let length_prefix = u32::from_le_bytes([src[0], src[1], src[2], src[3]]);
+
+		debug!("what is length prefix: {:?}", length_prefix);
+		if length_prefix > MAX_COMPLETE_FRAME_LENGTH {
+			src.advance(src.len());
+			Err(StealthStreamPacketError::LengthOutOfBounds(length_prefix as usize))
+		} else {
+			Ok(LengthPrefix(length_prefix))
+		}
+	}
+
 	/// Creates a new LengthPrefix from a [buffer](BytesMut).
 	///
-	/// This method also accepts the [FrameFlags] of the current frame. If the frame is a [FrameFlags::Beginning],
-	/// then we check the [MAX_MESSAGE_LENGTH]. Otherwise, the frame length must be less than or equal to the [MAX_COMPLETE_FRAME_LENGTH].
+	/// This method also accepts the [FrameFlags] of the current frame. If the
+	/// frame is a [FrameFlags::Beginning], then we check the
+	/// [MAX_MESSAGE_LENGTH]. Otherwise, the frame length must be less than or
+	/// equal to the [MAX_COMPLETE_FRAME_LENGTH].
 	///
-	/// This method also advanced the cursor by 4 bytes internally, due to the [BytesMut::get_u32_le] method.
+	/// This method also advanced the cursor by 4 bytes internally, due to the
+	/// [BytesMut::get_u32_le] method.
 	pub fn try_from(src: &mut BytesMut, frame_flags: &FrameFlags) -> Result<Self, StealthStreamPacketError> {
 		// Buffer is missing the length prefix.
 		if src.len() < 4 {
@@ -140,8 +157,9 @@ impl LengthPrefix {
 
 		let frame_length = src.get_u32_le();
 
-		// If the message is a beginning frame, the length prefix must be less than MAX_MESSAGE_LENGTH.
-		// Else, if it's greater than MAX_COMPLETE_FRAME_LENGTH, the length prefix is invalid.
+		// If the message is a beginning frame, the length prefix must be less than
+		// MAX_MESSAGE_LENGTH. Else, if it's greater than MAX_COMPLETE_FRAME_LENGTH, the
+		// length prefix is invalid.
 		if matches!(frame_flags, FrameFlags::Beginning) {
 			if frame_length > MAX_MESSAGE_LENGTH {
 				return Err(StealthStreamPacketError::LengthOutOfBounds(frame_length as usize));
@@ -153,13 +171,26 @@ impl LengthPrefix {
 		Ok(Self(frame_length))
 	}
 
-	/// Checks if the buffer is ready to receive the length prefix. This will return None if the buffer is not ready to receive the length prefix.
+	/// Checks if the buffer is ready to receive data, if so, then advance the
+	/// cursor and return the length of the buffer.
+	pub fn check_buffer_length_v2(&self, src: &mut BytesMut) -> Option<usize> {
+		if src.len() < 2 + self.0 as usize {
+			None
+		} else {
+			src.advance(4);
+			Some(src.len())
+		}
+	}
+
+	/// Checks if the buffer is ready to receive the length prefix. This will
+	/// return None if the buffer is not ready to receive the length prefix.
 	///
-	/// If this method return Some(usize), usize will be the amount of bytes that need to be read to receive the message content.
+	/// If this method return Some(usize), usize will be the amount of bytes
+	/// that need to be read to receive the message content.
 	pub fn check_buffer_length(&self, buffer: &mut BytesMut, flags: &FrameFlags) -> Option<usize> {
 		let length_prefix = self.0 as usize;
-
-		// If this is a beginning frame with the length prefix matching max message length
+		// If this is a beginning frame with the length prefix matching max message
+		// length
 		if matches!(flags, FrameFlags::Beginning) && self.0 == MAX_MESSAGE_LENGTH {
 			if buffer.len() < MAX_MESSAGE_LENGTH as usize {
 				None
@@ -168,9 +199,11 @@ impl LengthPrefix {
 				Some(MAX_MESSAGE_LENGTH as usize)
 			}
 		} else if buffer.len() < length_prefix {
+			debug!("length prefix: {:?}", length_prefix);
+			debug!("buffer length: {:?}", buffer.len());
 			return None; // we don't have enough bytes in the buffer.
 		} else {
-			let test = length_prefix.checked_sub(buffer.len());
+			let test = buffer.len().checked_sub(length_prefix);
 			if let Some(size) = test {
 				buffer.reserve(size);
 			} else {
@@ -204,21 +237,17 @@ impl MessageId {
 }
 
 #[allow(dead_code)]
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct MessageContent(pub(crate) Vec<u8>);
 
 impl MessageContent {
 	pub fn new(length: &LengthPrefix, src: &mut BytesMut) -> Self {
 		let content = src[0..length.0 as usize].to_vec();
-		src.advance(src.len());
+		src.advance(length.0 as usize);
 		Self(content)
 	}
 
-	pub fn extend_from_slice(&mut self, src: &[u8]) {
-		self.0.extend_from_slice(src);
-	}
+	pub fn extend_from_slice(&mut self, src: &[u8]) { self.0.extend_from_slice(src); }
 
-	pub fn content(&self) -> &[u8] {
-		&self.0
-	}
+	pub fn content(&self) -> &[u8] { &self.0 }
 }

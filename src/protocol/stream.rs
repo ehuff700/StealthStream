@@ -7,9 +7,9 @@ use tokio::{net::TcpStream, sync::Mutex};
 #[cfg(feature = "tls")]
 use tokio_rustls::TlsStream;
 use tokio_util::codec::{FramedRead, FramedWrite};
+use tracing::debug;
 
-use super::{StealthStreamCodec, StealthStreamPacket, StealthStreamPacketError};
-use crate::protocol::StealthStreamMessage;
+use super::{StealthStreamCodec, StealthStreamMessage, StealthStreamPacket, StealthStreamPacketError};
 
 #[derive(Debug)]
 #[cfg(not(feature = "tls"))]
@@ -44,10 +44,18 @@ impl StealthStream {
 	/// stream, and then flush is called once all items have been written.
 	pub async fn write_all(&self, data: Vec<StealthStreamPacket>) -> Result<(), StealthStreamPacketError> {
 		let mut writer = self.writer.lock().await;
-		for packet in data.into_iter() {
+		for packet in data {
+			debug!(
+				"packet| {} | {:?}, {:?} | {}",
+				packet.length(),
+				packet.flag(),
+				packet.message_id(),
+				packet.content().len()
+			);
 			writer.feed(packet).await?;
+			writer.flush().await?;
 		}
-		writer.flush().await
+		Ok(())
 	}
 
 	/// Reads a [StealthStreamMessage] from the underlying stream.
@@ -66,7 +74,7 @@ impl StealthStream {
 
 		if let Some(result) = next_result {
 			match result {
-				Ok(ref packet) => Some(StealthStreamMessage::from_message(packet)),
+				Ok(ref packet) => Some(StealthStreamMessage::from_packet(packet).await),
 				Err(e) => Some(Err(e)),
 			}
 		} else {
@@ -83,22 +91,16 @@ impl StealthStream {
 
 	/* Getters */
 	#[cfg(not(feature = "tls"))]
-	pub fn writer(&self) -> &Mutex<FramedWrite<OwnedWriteHalf, StealthStreamCodec>> {
-		&self.writer
-	}
+	pub fn writer(&self) -> &Mutex<FramedWrite<OwnedWriteHalf, StealthStreamCodec>> { &self.writer }
+
 	#[cfg(not(feature = "tls"))]
-	pub fn reader(&self) -> &Mutex<FramedRead<OwnedReadHalf, StealthStreamCodec>> {
-		&self.reader
-	}
+	pub fn reader(&self) -> &Mutex<FramedRead<OwnedReadHalf, StealthStreamCodec>> { &self.reader }
 
 	#[cfg(feature = "tls")]
-	pub fn writer(&self) -> &Mutex<FramedWrite<OwnedTlsWriteHalf, StealthStreamCodec>> {
-		&self.writer
-	}
+	pub fn writer(&self) -> &Mutex<FramedWrite<OwnedTlsWriteHalf, StealthStreamCodec>> { &self.writer }
+
 	#[cfg(feature = "tls")]
-	pub fn reader(&self) -> &Mutex<FramedRead<OwnedTlsReadHalf, StealthStreamCodec>> {
-		&self.reader
-	}
+	pub fn reader(&self) -> &Mutex<FramedRead<OwnedTlsReadHalf, StealthStreamCodec>> { &self.reader }
 }
 
 #[cfg(not(feature = "tls"))]

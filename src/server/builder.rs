@@ -1,17 +1,13 @@
-use std::{
-	net::{IpAddr, Ipv4Addr, SocketAddr},
-	sync::Arc,
-};
-
 #[cfg(feature = "tls")]
 use std::{
 	fs::File,
 	io::BufReader,
 	path::{Path, PathBuf},
 };
-
-use super::{server_struct::Server, MessageCallback, ServerResult};
-use crate::{client::RawClient, errors::Error, pin_callback, protocol::StealthStreamMessage};
+use std::{
+	net::{IpAddr, Ipv4Addr, SocketAddr},
+	sync::Arc,
+};
 
 #[cfg(feature = "tls")]
 use rustls::Certificate;
@@ -21,6 +17,11 @@ use tokio::net::TcpListener;
 #[cfg(feature = "tls")]
 use tokio_rustls::rustls::ServerConfig;
 use tracing::debug;
+
+use super::{server_struct::Server, MessageCallback, ServerResult};
+#[cfg(feature = "tls")]
+use crate::errors::Error;
+use crate::{client::RawClient, pin_callback, protocol::StealthStreamMessage};
 
 /// Utility Struct to build a [Server] as needed
 pub struct ServerBuilder {
@@ -158,7 +159,5 @@ impl ServerBuilder {
 }
 
 impl Default for ServerBuilder {
-	fn default() -> Self {
-		Self::new()
-	}
+	fn default() -> Self { Self::new() }
 }

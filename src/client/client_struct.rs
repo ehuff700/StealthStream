@@ -8,15 +8,10 @@ use std::{
 };
 
 use anyhow::anyhow;
-
 #[cfg(feature = "tls")]
 use rustls::ClientConfig;
-
-#[cfg(feature = "tls")]
-use crate::protocol::tls::{CertVerifier, ServerTlsStream};
 #[cfg(feature = "tls")]
 use rustls::{RootCertStore, ServerName};
-
 use tokio::{net::TcpStream, signal};
 #[cfg(feature = "tls")]
 use tokio_rustls::{TlsConnector, TlsStream};
@@ -24,6 +19,8 @@ use tracing::error;
 use uuid::Uuid;
 
 use super::ClientBuilder;
+#[cfg(feature = "tls")]
+use crate::protocol::tls::{CertVerifier, ServerTlsStream};
 use crate::{
 	errors::ClientErrors,
 	protocol::{
@@ -111,7 +108,8 @@ impl RawClient {
 
 	#[cfg(not(feature = "tls"))]
 	/// Creates a new [RawClient] from a [TcpStream] and
-	/// [SocketAddr]. This method is typically used to create a raw client on the server side.
+	/// [SocketAddr]. This method is typically used to create a raw client on
+	/// the server side.
 	pub(crate) fn from_stream(socket: TcpStream, address: SocketAddr) -> Self {
 		let connection_state = Arc::new(AtomicBool::new(true));
 		let raw_socket = Arc::new(socket.into());
@@ -125,7 +123,8 @@ impl RawClient {
 
 	#[cfg(feature = "tls")]
 	/// Creates a new [RawClient] from a [ServerTlsStream<TcpStream>] and
-	/// [SocketAddr]. This method is typically used to create a raw client on the server side.
+	/// [SocketAddr]. This method is typically used to create a raw client on
+	/// the server side.
 	pub(crate) fn from_tls_stream(socket: ServerTlsStream<TcpStream>, address: SocketAddr) -> Self {
 		use crate::protocol::tls::TlsStreamEnum;
 
@@ -143,7 +142,7 @@ impl RawClient {
 	pub async fn send(&self, message: StealthStreamMessage) -> ClientResult<()> {
 		if self.is_connected() {
 			self.raw_socket
-				.write_all(message.to_message())
+				.write_all(message.to_packet())
 				.await
 				.map_err(ClientErrors::from)
 		} else {
@@ -181,17 +180,11 @@ impl RawClient {
 	}
 
 	/* Getters */
-	pub fn socket(&self) -> &StealthStream {
-		&self.raw_socket
-	}
+	pub fn socket(&self) -> &StealthStream { &self.raw_socket }
 
-	pub fn peer_address(&self) -> &AddressContext {
-		&self.peer_address
-	}
+	pub fn peer_address(&self) -> &AddressContext { &self.peer_address }
 
-	pub fn is_connected(&self) -> bool {
-		self.connection_state.load(Ordering::SeqCst)
-	}
+	pub fn is_connected(&self) -> bool { self.connection_state.load(Ordering::SeqCst) }
 }
 
 #[derive(Clone)]
@@ -254,9 +247,7 @@ impl Client {
 	}
 
 	/// Sends a message to/from the client to the stream.
-	pub async fn send(&self, message: StealthStreamMessage) -> ClientResult<()> {
-		self.inner()?.send(message).await
-	}
+	pub async fn send(&self, message: StealthStreamMessage) -> ClientResult<()> { self.inner()?.send(message).await }
 
 	/// Spawns a new tokio task which listens for incoming messages.
 	///
@@ -298,9 +289,7 @@ impl Client {
 	///
 	/// This method will additionally close the underlying socket, preventing
 	/// any messages from being sent.
-	pub async fn disconnect(&self) -> ClientResult<()> {
-		self.inner()?.disconnect().await
-	}
+	pub async fn disconnect(&self) -> ClientResult<()> { self.inner()?.disconnect().await }
 
 	/// Functionally the same as `disconnect`, but with a reason.
 	pub async fn disconnect_with_reason(&self, code: impl Into<GoodbyeCodes>, reason: &str) -> ClientResult<()> {
@@ -354,13 +343,13 @@ mod tests {
 	use rand::Rng;
 	use tokio::time::timeout;
 	#[allow(unused_imports)]
-	use tracing::{info, level_filters::LevelFilter};
+	use tracing::{debug, info, level_filters::LevelFilter};
 
 	use crate::{
 		client::ClientBuilder,
 		errors::ClientErrors,
 		pin_callback,
-		protocol::{MessageData, StealthStreamMessage, StealthStreamPacket, StealthStreamPacketError},
+		protocol::{data_messages::MessageData, StealthStreamMessage, StealthStreamPacket, StealthStreamPacketError},
 		server::{MessageCallback, Server, ServerBuilder},
 	};
 
@@ -460,7 +449,7 @@ mod tests {
 	async fn test_basic_send() {
 		let (server, client) = server_client_setup1!();
 
-		let message = super::StealthStreamMessage::Message(MessageData::new("Test Message!", false));
+		let message = super::StealthStreamMessage::Message(MessageData::new(b"Test Message!", false));
 		assert!(client.send(message).await.is_ok());
 		drop(server)
 	}
@@ -480,26 +469,26 @@ mod tests {
 				})
 			}
 		});
-		tokio::time::sleep(Duration::from_millis(1)).await;
 
 		/* Test Successful Recieve */
-		let expected = StealthStreamMessage::Message(MessageData::new(test_txt, true));
+		let expected = StealthStreamMessage::Message(MessageData::new(test_txt.as_bytes(), true));
 		client.send(expected).await.expect("error sending message");
 
 		let received = rx.recv().await.expect("didn't receive valid stealthstream message");
-		let expected = StealthStreamMessage::Message(MessageData::new(test_txt, true));
+		let expected = StealthStreamMessage::Message(MessageData::new(test_txt.as_bytes(), true));
 
 		assert_eq!(received, expected, "the received message did not match the expected one");
 	}
 
 	#[tokio::test]
 	async fn test_bad_send() {
+		//tracing_subscriber::fmt().with_max_level(LevelFilter::DEBUG).init();
 		let (tx, mut rx) = tokio::sync::mpsc::channel(10);
 
 		let (_, client) = server_client_setup1!({
 			move |recieved_message, _| {
 				let tx = tx.clone();
-				info!("Recieved message: {:?}", recieved_message);
+				info!("Recieved message: {}", recieved_message);
 				pin_callback!({
 					tx.send(recieved_message).await.unwrap();
 				})
@@ -507,8 +496,6 @@ mod tests {
 		});
 
 		let raw = client.inner().unwrap();
-
-		tokio::time::sleep(Duration::from_millis(1)).await;
 
 		/* Send a Bad Packet */
 		let mut guard = raw.raw_socket.writer().lock().await;
@@ -522,9 +509,44 @@ mod tests {
 		assert!(received.is_err());
 
 		/* Assert that normal packets can be sent after bad ones */
-		let expected = StealthStreamMessage::Message(MessageData::new("hey", false));
+		let expected = StealthStreamMessage::Message(MessageData::new(b"hey", true));
 		client.send(expected).await.unwrap();
 		let received = timeout(Duration::from_millis(300), rx.recv()).await;
 		assert!(received.is_ok_and(|v| v.is_some()));
+	}
+
+	#[tokio::test]
+	async fn test_message_fragmentation() {
+		//tracing_subscriber::fmt().with_max_level(LevelFilter::DEBUG).init();
+		let (tx, mut rx) = tokio::sync::mpsc::channel(10);
+
+		let (_, client) = server_client_setup1!({
+			move |recieved_message, _| {
+				let tx = tx.clone();
+				info!("Recieved message: {}", recieved_message);
+				pin_callback!({
+					tx.send(recieved_message).await.unwrap();
+				})
+			}
+		});
+
+		/* Test Message Fragmentation */
+		let gen = generate_long_string(3);
+		let result = client.send(StealthStreamMessage::create_utf8_message(&gen)).await;
+		assert!(result.is_ok());
+		let test = rx.recv().await;
+		assert!(test.is_some_and(|v| v.to_string().contains("Abc123")));
+
+		/* Test Successful Send */
+		let result = client.send(StealthStreamMessage::create_utf8_message("hi")).await;
+		assert!(result.is_ok());
+		let test = rx.recv().await;
+		assert!(test.is_some_and(|v| v.to_string().contains("hi")));
+	}
+
+	fn generate_long_string(length_kb: usize) -> String {
+		let length = 1024 * length_kb; // Convert KB to bytes (characters)
+		let repeated_char = "Abc123"; // You can choose any character
+		repeated_char.to_string().repeat(length)
 	}
 }

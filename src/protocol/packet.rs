@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 
 use bytes::{Buf, BufMut, BytesMut};
+use derive_getters::Getters;
 use thiserror::Error;
 use tokio_util::codec::{Decoder, Encoder};
-
 #[cfg(test)]
 use tracing::debug;
 
@@ -12,7 +12,10 @@ use super::{
 	framing::{FrameFlags, LengthPrefix, MessageContent},
 	HandshakeErrors,
 };
-use crate::protocol::framing::{FrameOpcodes, MessageId};
+use crate::protocol::{
+	constants::MAX_COMPLETE_FRAME_LENGTH,
+	framing::{FrameOpcodes, MessageId},
+};
 
 #[derive(Debug, Error)]
 pub enum StealthStreamPacketError {
@@ -47,12 +50,15 @@ pub enum StealthStreamPacketError {
 	StreamClosed,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Getters)]
 pub struct StealthStreamPacket {
+	#[getter(skip)]
 	opcode: FrameOpcodes,
 	flag: FrameFlags,
+	#[getter(skip)]
 	length: usize,
 	message_id: Option<MessageId>,
+	#[getter(skip)]
 	content: Vec<u8>,
 }
 
@@ -94,17 +100,11 @@ impl StealthStreamPacket {
 		}
 	}
 
-	pub fn opcode(&self) -> u8 {
-		self.opcode as u8
-	}
+	pub fn opcode(&self) -> u8 { self.opcode as u8 }
 
-	pub fn length(&self) -> u16 {
-		self.length as u16
-	}
+	pub fn length(&self) -> u16 { self.length as u16 }
 
-	pub fn content(&self) -> &[u8] {
-		&self.content
-	}
+	pub fn content(&self) -> &[u8] { &self.content }
 
 	pub fn needs_message_id(&self) -> bool {
 		matches!(self.flag, FrameFlags::Beginning | FrameFlags::Continuation | FrameFlags::End)
@@ -124,7 +124,7 @@ impl From<StealthStreamPacket> for Vec<u8> {
 			dst.reserve(1 + 1 + 4 + 16 + packet.content.len());
 			dst.put_u8(packet.opcode as u8);
 			dst.put_u8(packet.flag as u8);
-			dst.extend_from_slice(&packet.message_id.unwrap().0.to_bytes_le())
+			dst.extend_from_slice(&packet.message_id.unwrap().0.into_bytes())
 		} else {
 			dst.reserve(1 + 1 + 4 + packet.content.len());
 			dst.put_u8(packet.opcode as u8);
@@ -151,90 +151,114 @@ impl Decoder for StealthStreamCodec {
 	type Item = StealthStreamPacket;
 
 	fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
-		if src.len() < 2 {
-			return Ok(None);
-		}
+		loop {
+			if src.len() < HEADER_LENGTH {
+				return Ok(None);
+			}
 
-		let opcode = FrameOpcodes::try_from(src[0])?;
-		let flag = FrameFlags::try_from(src[1], &opcode)?;
-		src.advance(2);
+			#[cfg(test)]
+			debug!("src len: {}", src.len());
 
-		let message_id = if opcode.is_data_frame()
-			&& matches!(flag, FrameFlags::Beginning | FrameFlags::Continuation | FrameFlags::End)
-		{
-			Some(MessageId::try_from(src)?)
-		} else {
-			None
-		};
+			// Parses the length prefix from the first 4 bytes, returning an error if it's
+			// out of bounds.
+			let length_prefix = LengthPrefix::try_from_v2(src)?;
+			let _bytes_to_read = match length_prefix.check_buffer_length_v2(src) {
+				None => return Ok(None),
+				Some(bytes_read) => bytes_read,
+			};
 
-		// Not necessary to advance position, [LengthPrefix::try_from] does that internally.
-		let length = LengthPrefix::try_from(src, &flag)?;
-		let _bytes_to_read = match length.check_buffer_length(src, &flag) {
-			None => return Ok(None),
-			Some(bytes_read) => bytes_read,
-		};
+			#[cfg(test)]
+			{
+				debug!("length prefix: {:?}", length_prefix);
+				debug!("bytes_to_read: {:?}", _bytes_to_read);
+				debug!("current src len: {}", src.len());
+			}
 
-		#[cfg(test)]
-		{
-			debug!("length prefix: {:?}", length);
-			debug!("bytes_to_read: {:?}", _bytes_to_read);
-		}
+			let opcode = FrameOpcodes::try_from(src[0])?;
+			let flag = FrameFlags::try_from(src[1], &opcode)?;
+			src.advance(2);
 
-		let message = MessageContent::new(&length, src);
+			#[cfg(test)]
+			{
+				debug!("opcode: {:?}", opcode);
+				debug!("flag: {:?}", flag);
+			}
 
-		if let Some(message_id) = message_id {
-			match flag {
-				FrameFlags::Beginning => {
-					self.message_buffers.insert(message_id, message);
-					return Ok(None);
-				},
-				FrameFlags::Continuation | FrameFlags::End => match self.message_buffers.get_mut(&message_id) {
-					Some(buffer) => {
-						buffer.extend_from_slice(message.content());
-						if matches!(flag, FrameFlags::End) {
-							let content = self.message_buffers.remove(&message_id).unwrap();
-							return Ok(Some(StealthStreamPacket::from_encoded(
-								opcode,
-								flag,
-								length,
-								content,
-								Some(message_id),
-							)));
-						};
-						return Ok(None);
-					},
-					None => {
-						if matches!(flag, FrameFlags::Continuation) {
-							return Err(StealthStreamPacketError::ArbitraryContinuationFrame {
-								message_id,
-								continuation_frame: message.content().to_vec(),
-							});
-						} else {
-							return Err(StealthStreamPacketError::ArbitraryEndFrame {
-								message_id,
-								end_frame: message.content().to_vec(),
-							});
+			let message_id = if opcode.is_data_frame()
+				&& matches!(flag, FrameFlags::Beginning | FrameFlags::Continuation | FrameFlags::End)
+			{
+				Some(MessageId::try_from(src)?)
+			} else {
+				None
+			};
+
+			#[cfg(test)]
+			debug!("message_id: {:?}", message_id);
+
+			let message = MessageContent::new(&length_prefix, src);
+
+			if let Some(message_id) = message_id {
+				match flag {
+					FrameFlags::Beginning => {
+						self.message_buffers.insert(message_id, message.clone());
+						if src.len() > HEADER_LENGTH {
+							continue;
 						}
 					},
-				},
-				_ => {},
-			};
+					FrameFlags::Continuation | FrameFlags::End => match self.message_buffers.get_mut(&message_id) {
+						Some(buffer) => {
+							buffer.extend_from_slice(message.content());
+							if matches!(flag, FrameFlags::End) {
+								let content = self.message_buffers.remove(&message_id).unwrap();
+								return Ok(Some(StealthStreamPacket::from_encoded(
+									opcode,
+									flag,
+									length_prefix,
+									content,
+									Some(message_id),
+								)));
+							};
+							if src.len() > HEADER_LENGTH {
+								continue;
+							}
+						},
+						None => {
+							if matches!(flag, FrameFlags::Continuation) {
+								return Err(StealthStreamPacketError::ArbitraryContinuationFrame {
+									message_id,
+									continuation_frame: message.content().to_vec(),
+								});
+							} else {
+								return Err(StealthStreamPacketError::ArbitraryEndFrame {
+									message_id,
+									end_frame: message.content().to_vec(),
+								});
+							}
+						},
+					},
+					_ => {},
+				};
+			}
+
+			#[cfg(test)]
+			{
+				debug!(target: "test", "Message Completed.");
+				debug!(target: "test", "opcode: {:?}", opcode);
+				debug!(target: "test", "length: {:?}", length_prefix);
+				debug!(target: "test", "flag: {:?}", flag);
+			}
+
+			// Reserve the amount of memory needed for the next header.
+			src.reserve(HEADER_LENGTH);
+
+			return Ok(Some(StealthStreamPacket::from_encoded(
+				opcode,
+				flag,
+				length_prefix,
+				message,
+				message_id,
+			)));
 		}
-
-		#[cfg(test)]
-		{
-			debug!(target: "test", "Message Completed.");
-			debug!(target: "test", "opcode: {:?}", opcode);
-			debug!(target: "test", "length: {:?}", length);
-			debug!(target: "test", "flag: {:?}", flag);
-		}
-
-		// Reserve the amount of memory needed for the next header.
-		src.reserve(HEADER_LENGTH);
-
-		Ok(Some(StealthStreamPacket::from_encoded(
-			opcode, flag, length, message, message_id,
-		)))
 	}
 }
 
@@ -246,17 +270,18 @@ impl Encoder<StealthStreamPacket> for StealthStreamCodec {
 
 		// Reserve space for opcode/flag/length prefix + content length
 		if item.needs_message_id() {
-			dst.reserve(1 + 1 + 4 + 16 + item.content.len());
+			dst.reserve(4 + 1 + 1 + 16 + item.content.len());
+			dst.extend_from_slice(&length);
 			dst.put_u8(item.opcode as u8);
 			dst.put_u8(item.flag as u8);
 			dst.extend_from_slice(&item.message_id.unwrap().0.to_bytes_le())
 		} else {
-			dst.reserve(1 + 1 + 4 + item.content.len());
+			dst.reserve(4 + 1 + 1 + item.content.len());
+			dst.extend_from_slice(&length);
 			dst.put_u8(item.opcode as u8);
 			dst.put_u8(item.flag as u8);
 		}
 
-		dst.extend_from_slice(&length);
 		dst.extend_from_slice(&item.content);
 
 		Ok(())
