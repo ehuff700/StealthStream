@@ -187,9 +187,11 @@ mod tests {
 
 	use super::Server;
 	use crate::client::ClientBuilder;
+	use crate::protocol::control_messages::HandshakeData;
+	use crate::protocol::data_messages::MessageData;
 	use crate::{
 		pin_callback,
-		protocol::{HandshakeData, MessageData, StealthStreamMessage},
+		protocol::StealthStreamMessage,
 		server::{MessageCallback, ServerBuilder},
 	};
 	use rand::Rng;
@@ -298,7 +300,7 @@ mod tests {
 			.await
 			.expect("couldn't connect to server");
 		let handshake = StealthStreamMessage::Handshake(HandshakeData::new(1, None));
-		let mut test = handshake.to_message();
+		let mut test = handshake.to_packet();
 
 		let bytes: Vec<u8> = test.pop().unwrap().into();
 
@@ -316,7 +318,7 @@ mod tests {
 		assert!(raw_stream_result.is_err(), "Somehow recieved a successful message?");
 
 		/* Test Successful Recieve */
-		let packet = StealthStreamMessage::Message(MessageData::new("test", false));
+		let packet = StealthStreamMessage::Message(MessageData::new(b"test", false));
 		c.send(packet).await.expect("error sending message");
 
 		let received = rx.recv().await;

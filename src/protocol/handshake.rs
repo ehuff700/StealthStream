@@ -1,12 +1,14 @@
-use std::{io::Read, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 
 use thiserror::Error;
+use tokio::io::AsyncReadExt;
 use tracing::{debug, info};
 use uuid::Uuid;
 
 use super::{
 	constants::{DEFAULT_HANDSHAKE_LENGTH, HANDSHAKE_LENGTH_WITH_SESSION_ID, SUPPORTED_VERSIONS},
-	HandshakeData, StealthStreamMessage, StealthStreamPacketError,
+	control_messages::HandshakeData,
+	StealthStreamMessage, StealthStreamPacketError,
 };
 use crate::{
 	client::{Client, ClientResult, RawClient},
@@ -54,19 +56,19 @@ impl Handshake {
 	/// Utility function that validates a [StealthStreamMessage::Handshake]
 	/// message.
 	/// TODO: make this better because wtf is this
-	pub fn parse_handshake(mut message_buffer: &[u8]) -> Result<Self, HandshakeErrors> {
+	pub async fn parse_handshake(mut message_buffer: &[u8]) -> Result<Self, HandshakeErrors> {
 		let mut session_id: Option<Uuid> = None;
 		let version;
 
 		if message_buffer.len() == DEFAULT_HANDSHAKE_LENGTH || message_buffer.len() == HANDSHAKE_LENGTH_WITH_SESSION_ID
 		{
 			let mut version_buffer = [0u8; 1];
-			message_buffer.read_exact(&mut version_buffer)?;
+			message_buffer.read_exact(&mut version_buffer).await?;
 			version = version_buffer[0];
 
 			if message_buffer.len() == HANDSHAKE_LENGTH_WITH_SESSION_ID {
 				let mut session_id_buffer = [0u8; 16];
-				message_buffer.read_exact(&mut session_id_buffer)?;
+				message_buffer.read_exact(&mut session_id_buffer).await?;
 				session_id = Some(Uuid::from_bytes(session_id_buffer));
 			}
 		} else {
@@ -88,9 +90,7 @@ impl Handshake {
 }
 
 impl From<Handshake> for HandshakeData {
-	fn from(value: Handshake) -> Self {
-		HandshakeData::new(value.version, value.session_id)
-	}
+	fn from(value: Handshake) -> Self { HandshakeData::new(value.version, value.session_id) }
 }
 
 #[derive(Debug, Error)]

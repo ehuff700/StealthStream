@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [features]
-default = ["signals", "tls"]
+default = ["signals"]
 
 # This feature enables signal handlers to be registered for client and server (e.g ctrl + c).
 signals = []
@@ -36,6 +36,7 @@ tokio-rustls = { version = "0.24.1", optional = true, features = [
 rustls-pemfile = { version = "1.0.4", optional = true }
 rustls = { version = "0.21.8", default-features = false, optional = true }
 derive-getters = "0.3.0"
+async-trait = "0.1.74"
 
 [dependencies.tokio]
 version = "1.33.0"
@@ -53,11 +54,6 @@ features = [
 [dependencies.uuid]
 version = "1.5.0"
 features = ["v4", "fast-rng"]
-
-
-[[bench]]
-name = "tungstenite_vs_stealthstream"
-harness = false
 
 [[example]]
 name = "client"

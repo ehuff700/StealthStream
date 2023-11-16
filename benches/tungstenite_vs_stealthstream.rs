@@ -1,13 +1,12 @@
-use std::{sync::Arc, time::Duration};
+#![feature(test)]
+extern crate test;
 
-use criterion::{criterion_group, criterion_main, Criterion};
+use std::sync::Arc;
+
 use futures_util::{future, SinkExt, StreamExt, TryStreamExt};
 use rand::Rng;
 use stealthstream::{
-	self,
-	client::ClientBuilder,
-	pin_callback,
-	protocol::StealthStreamMessage,
+	self, pin_callback,
 	server::{Server, ServerBuilder},
 };
 use tokio::{
@@ -16,8 +15,8 @@ use tokio::{
 };
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use url::Url;
-const TEST_MESSAGE_LENGTH: usize = 10;
 
+#[allow(dead_code)]
 fn generate_long_utf8_string(length: usize) -> String {
 	let repeated_char = 'A'; // Replace with the character you want to repeat
 	let long_string: String = std::iter::repeat(repeated_char).take(length).collect();
@@ -85,96 +84,80 @@ async fn setup_tokio_tungstenite_server() -> String {
 	format!("127.0.0.1:{random_port}")
 }
 
-fn stealthstream_benchmark(c: &mut Criterion) {
-	let mut group = c.benchmark_group("Stealthstream Group");
-	let rt = tokio::runtime::Runtime::new().unwrap();
-	let server = rt.block_on(async { setup_stealthstream_server().await });
-	let client = rt.block_on(async {
-		let mut client = ClientBuilder::default().build();
-		client
-			.connect(server.address())
-			.await
-			.expect("couldn't connect to local stealthstream server");
-		client
-	});
+#[cfg(test)]
+mod tests {
+	use stealthstream::{client::ClientBuilder, protocol::StealthStreamMessage};
+	use test::Bencher;
 
-	let inner = client.inner().unwrap();
-	let (reader, writer) = (inner.socket().reader(), inner.socket().writer());
-	let (reader_clone, writer_clone) = (Arc::new(reader), Arc::new(writer));
+	use super::*;
 
-	std::thread::sleep(Duration::from_millis(100));
-	let test_message = generate_long_utf8_string(TEST_MESSAGE_LENGTH);
+	#[bench]
+	fn stealthstream_benchmark(b: &mut Bencher) {
+		let rt = tokio::runtime::Runtime::new().unwrap();
+		let server = rt.block_on(async { setup_stealthstream_server().await });
+		let client = rt.block_on(async {
+			let mut client = ClientBuilder::default().build();
+			client
+				.connect(server.address())
+				.await
+				.expect("couldn't connect to local stealthstream server");
+			client
+		});
 
-	group.bench_with_input("stealthstream", &test_message, |b, i| {
-		let cloned = (reader_clone.clone(), writer_clone.clone());
+		let inner = client.inner().unwrap();
 
-		b.to_async(&rt).iter(move || {
-			let (reader, writer) = cloned.clone();
-			async move {
-				let mut writer_guard = writer.lock().await;
-				let mut reader_guard = reader.lock().await;
+		b.iter(|| {
+			let inner = inner.clone();
+			let guard = rt.enter();
 
-				let _ = writer_guard
-					.send(StealthStreamMessage::Message(i.to_string()).into())
+			let fut = tokio::task::spawn(async move {
+				let _ = inner
+					.send(StealthStreamMessage::create_utf8_message("Hello World"))
 					.await;
-				drop(writer_guard);
-				let _ = reader_guard.next().await;
-				drop(reader_guard);
-			}
+				inner.receive().await;
+			});
+			drop(guard);
+			let _ = rt.block_on(fut);
 		})
-	});
-	group.finish();
-}
+	}
 
-fn tokio_tungstenite_benchmark(c: &mut Criterion) {
-	let mut group = c.benchmark_group("Tokio Tungstenite Group");
-	let rt = tokio::runtime::Runtime::new().unwrap();
+	#[bench]
+	fn tokio_tungstenite_benchmark(b: &mut Bencher) {
+		let rt = tokio::runtime::Runtime::new().unwrap();
 
-	let address = rt.block_on(setup_tokio_tungstenite_server());
-	let (original_socket, _) = rt.block_on(async {
-		connect_async(Url::parse(&format!("ws://{address}")).unwrap())
-			.await
-			.expect("Failed to connect")
-	});
+		let address = rt.block_on(setup_tokio_tungstenite_server());
+		let (original_socket, _) = rt.block_on(async {
+			connect_async(Url::parse(&format!("ws://{address}")).unwrap())
+				.await
+				.expect("Failed to connect")
+		});
 
-	let socket = Arc::new(Mutex::new(original_socket)); // Wrap the socket in a shared, lockable Arc
+		let socket = Arc::new(Mutex::new(original_socket)); // Wrap the socket in a shared, lockable Arc
 
-	group.bench_function("tokio_tungstenite", |b| {
-		let socket_clone = Arc::clone(&socket);
+		b.iter(|| {
+			let socket_clone = Arc::clone(&socket);
 
-		b.to_async(&rt).iter_batched(
-			|| generate_long_utf8_string(TEST_MESSAGE_LENGTH),
-			move |length| {
-				let socket_clone = Arc::clone(&socket_clone);
+			async move {
+				let mut ws_socket = socket_clone.lock().await;
 
-				async move {
-					let mut ws_socket = socket_clone.lock().await;
+				ws_socket
+					.send(Message::Text("Hello World".to_string()))
+					.await
+					.expect("Failed to send message");
 
-					ws_socket
-						.send(Message::Text(length.clone()))
-						.await
-						.expect("Failed to send message");
-
-					if let Some(msg) = ws_socket.next().await {
-						match msg {
-							Ok(msg) => {
-								assert_eq!(msg, Message::Text(length));
-							},
-							Err(e) => panic!("Error during the websocket communication: {:?}", e),
-						}
+				if let Some(msg) = ws_socket.next().await {
+					match msg {
+						Ok(msg) => {
+							assert_eq!(msg, Message::Text("Hello World".to_string()));
+						},
+						Err(e) => panic!("Error during the websocket communication: {:?}", e),
 					}
 				}
-			},
-			criterion::BatchSize::SmallInput,
-		);
-	});
+			}
+		});
 
-	rt.block_on(async {
-		let _ = socket.lock().await.close(None).await;
-	});
-
-	group.finish();
+		rt.block_on(async {
+			let _ = socket.lock().await.close(None).await;
+		});
+	}
 }
-
-criterion_group!(benches, stealthstream_benchmark, tokio_tungstenite_benchmark);
-criterion_main!(benches);

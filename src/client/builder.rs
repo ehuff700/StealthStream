@@ -87,7 +87,7 @@ impl ClientBuilder {
 	pub(crate) fn default_event_handler() -> Arc<dyn MessageCallback> {
 		let handler = |message: StealthStreamMessage, _: Arc<RawClient>| {
 			pin_callback!({
-				debug!(target: "default_event_handler", "Received message: {:?}", message);
+				debug!(target: "default_event_handler", "Received message: {}", message);
 			})
 		};
 		Arc::new(handler)
