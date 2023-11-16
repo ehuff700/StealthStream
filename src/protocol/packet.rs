@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use bytes::{Buf, BufMut, BytesMut};
 use thiserror::Error;
 use tokio_util::codec::{Decoder, Encoder};
@@ -5,10 +7,12 @@ use tokio_util::codec::{Decoder, Encoder};
 #[cfg(test)]
 use tracing::debug;
 
-use super::{framing::FrameFlags, HandshakeErrors, StealthStreamMessage};
-use crate::protocol::framing::FrameOpcodes;
-
-const MAX: usize = 8 * 1024 * 1024;
+use super::{
+	constants::HEADER_LENGTH,
+	framing::{FrameFlags, LengthPrefix, MessageContent},
+	HandshakeErrors,
+};
+use crate::protocol::framing::{FrameOpcodes, MessageId};
 
 #[derive(Debug, Error)]
 pub enum StealthStreamPacketError {
@@ -18,6 +22,19 @@ pub enum StealthStreamPacketError {
 	InvalidOpcodeByte(u8),
 	#[error("packet contains invalid flag byte: {0}")]
 	InvalidFlagByte(u8),
+	#[error("invalid flag {flag:?} for opcode: {opcode:?}")]
+	InvalidFlagForOpcode { flag: FrameFlags, opcode: FrameOpcodes },
+	#[error("packet missing message id")]
+	MessageIdMissing,
+	#[error("packet contains invalid message id, citing parse error: {0}")]
+	InvalidMessageId(#[from] uuid::Error),
+	#[error("message id '{{message_id.0}}' associated with continuation frame missing")]
+	ArbitraryContinuationFrame {
+		message_id: MessageId,
+		continuation_frame: Vec<u8>,
+	},
+	#[error("message id '{{message_id.0}}' associated with end frame missing")]
+	ArbitraryEndFrame { message_id: MessageId, end_frame: Vec<u8> },
 	#[error("packet missing length prefix")]
 	LengthPrefixMissing,
 	#[error("packet length out of bounds: {0}")]
@@ -35,10 +52,21 @@ pub struct StealthStreamPacket {
 	opcode: FrameOpcodes,
 	flag: FrameFlags,
 	length: usize,
+	message_id: Option<MessageId>,
 	content: Vec<u8>,
 }
 
 impl StealthStreamPacket {
+	pub fn new_v2(opcode: FrameOpcodes, flag: FrameFlags, message_id: Option<MessageId>, content: Vec<u8>) -> Self {
+		Self {
+			opcode,
+			flag,
+			length: content.len(),
+			message_id,
+			content,
+		}
+	}
+
 	/// Used internally for fuzzing purposes.
 	#[cfg(test)]
 	pub(crate) fn new(opcode: u8, length: usize, content: Vec<u8>) -> Self {
@@ -46,13 +74,29 @@ impl StealthStreamPacket {
 			opcode: FrameOpcodes::try_from(opcode).unwrap(),
 			flag: FrameFlags::Complete,
 			length,
+			message_id: None,
 			content,
+		}
+	}
+
+	pub(crate) fn from_encoded(
+		opcode: FrameOpcodes, flag: FrameFlags, length: LengthPrefix, content: MessageContent,
+		message_id: Option<MessageId>,
+	) -> Self {
+		let (content, length) = (content.0, length.0 as usize);
+
+		Self {
+			opcode,
+			flag,
+			length,
+			content,
+			message_id,
 		}
 	}
 
 	// FIXME
 	pub fn opcode(&self) -> u8 {
-		self.opcode.clone() as u8
+		self.opcode as u8
 	}
 
 	pub fn length(&self) -> u16 {
@@ -62,32 +106,35 @@ impl StealthStreamPacket {
 	pub fn content(&self) -> &[u8] {
 		&self.content
 	}
-}
 
-impl From<StealthStreamMessage> for StealthStreamPacket {
-	fn from(message: StealthStreamMessage) -> Self {
-		let content = message.serialize_content_bytes();
-		Self {
-			opcode: FrameOpcodes::try_from(message.opcode()).unwrap(),
-			length: content.len(),
-			flag: FrameFlags::Complete, // TODO: implement flags,
-			content,
-		}
+	pub fn needs_message_id(&self) -> bool {
+		matches!(self.flag, FrameFlags::Beginning | FrameFlags::Continuation | FrameFlags::End)
+			&& self.opcode.is_data_frame()
 	}
 }
 
 #[cfg(test)]
 impl From<StealthStreamPacket> for Vec<u8> {
 	fn from(packet: StealthStreamPacket) -> Self {
-		let mut buf = BytesMut::new();
+		let mut dst = BytesMut::new();
 
 		let length = u32::to_le_bytes(packet.length as u32);
-		buf.reserve(1 + 1 + 4 + packet.content.len());
-		buf.put_u8(packet.opcode as u8);
-		buf.put_u8(packet.flag as u8);
-		buf.extend_from_slice(&length);
-		buf.extend_from_slice(&packet.content);
-		buf.to_vec()
+
+		// Reserve space for opcode/flag/length prefix + content length
+		if packet.needs_message_id() {
+			dst.reserve(1 + 1 + 4 + 16 + packet.content.len());
+			dst.put_u8(packet.opcode as u8);
+			dst.put_u8(packet.flag as u8);
+			dst.extend_from_slice(&packet.message_id.unwrap().0.to_bytes_le())
+		} else {
+			dst.reserve(1 + 1 + 4 + packet.content.len());
+			dst.put_u8(packet.opcode as u8);
+			dst.put_u8(packet.flag as u8);
+		}
+
+		dst.extend_from_slice(&length);
+		dst.extend_from_slice(&packet.content);
+		dst.to_vec()
 	}
 }
 
@@ -95,97 +142,100 @@ impl From<StealthStreamPacket> for Vec<u8> {
 ///
 /// Implements the [Decoder] and [Encoder] traits to read and write frames to
 /// the underlying stream.
-#[derive(Debug)]
-pub struct StealthStreamCodec;
-impl StealthStreamCodec {
-	fn normal_decode(&mut self, src: &mut BytesMut) -> Result<Option<Vec<u8>>, StealthStreamPacketError> {
-		if src.len() < 2 {
-			return Err(StealthStreamPacketError::LengthPrefixMissing);
-		}
-
-		let length = src.get_u32_le() as usize;
-		if length > MAX {
-			return Err(StealthStreamPacketError::LengthOutOfBounds(length));
-		}
-
-		if src.len() < length {
-			src.reserve(length - src.len());
-			return Ok(None);
-		}
-
-		let content = src[0..length].to_vec();
-		// Advance the cursor by the length of the buffer.
-		// The reason we don't use `length` here is because if the length of the data
-		// was less than the length prefix, the cursor would get stuck and subsequent
-		// reads would be broken.
-		src.advance(src.len());
-		Ok(Some(content))
-	}
+#[derive(Debug, Default)]
+pub struct StealthStreamCodec {
+	message_buffers: HashMap<MessageId, MessageContent>,
 }
 
 impl Decoder for StealthStreamCodec {
 	type Error = StealthStreamPacketError;
 	type Item = StealthStreamPacket;
 
-	// TODO: implement beginning/continuation frames
 	fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
 		if src.len() < 2 {
 			return Ok(None);
 		}
 
 		let opcode = FrameOpcodes::try_from(src[0])?;
-		let flag = FrameFlags::try_from(src[1])?;
+		let flag = FrameFlags::try_from(src[1], &opcode)?;
 		src.advance(2);
 
-		if opcode.is_data_frame() {
-			match flag {
-				FrameFlags::Complete => (),
-				FrameFlags::End => (),
-				_ => {},
-			}
-		}
-		if src.len() < 2 {
-			return Err(StealthStreamPacketError::LengthPrefixMissing);
-		}
+		let message_id = if opcode.is_data_frame()
+			&& matches!(flag, FrameFlags::Beginning | FrameFlags::Continuation | FrameFlags::End)
+		{
+			Some(MessageId::try_from(src)?)
+		} else {
+			None
+		};
 
-		let length = src.get_u32_le() as usize;
-		if length > MAX {
-			return Err(StealthStreamPacketError::LengthOutOfBounds(length));
-		}
-
-		if src.len() < length {
-			src.reserve(length - src.len());
-			return Ok(None);
-		}
-
-		let content = src[0..length].to_vec();
-		// Advance the cursor by the length of the buffer.
-		// The reason we don't use `length` here is because if the length of the data
-		// was less than the length prefix, the cursor would get stuck and subsequent
-		// reads would be broken.
-		src.advance(src.len());
+		// Not necessary to advance position, [LengthPrefix::try_from] does that internally.
+		let length = LengthPrefix::try_from(src, &flag)?;
+		let _bytes_to_read = match length.check_buffer_length(src, &flag) {
+			None => return Ok(None),
+			Some(bytes_read) => bytes_read,
+		};
 
 		#[cfg(test)]
 		{
-			let test_utf_8 = String::from_utf8_lossy(&content);
+			debug!("length prefix: {:?}", length);
+			debug!("bytes_to_read: {:?}", _bytes_to_read);
+		}
+
+		let message = MessageContent::new(&length, src);
+
+		if let Some(message_id) = message_id {
+			match flag {
+				FrameFlags::Beginning => {
+					self.message_buffers.insert(message_id, message);
+					return Ok(None);
+				},
+				FrameFlags::Continuation | FrameFlags::End => match self.message_buffers.get_mut(&message_id) {
+					Some(buffer) => {
+						buffer.extend_from_slice(message.content());
+						if matches!(flag, FrameFlags::End) {
+							let content = self.message_buffers.remove(&message_id).unwrap();
+							return Ok(Some(StealthStreamPacket::from_encoded(
+								opcode,
+								flag,
+								length,
+								content,
+								Some(message_id),
+							)));
+						};
+						return Ok(None);
+					},
+					None => {
+						if matches!(flag, FrameFlags::Continuation) {
+							return Err(StealthStreamPacketError::ArbitraryContinuationFrame {
+								message_id,
+								continuation_frame: message.content().to_vec(),
+							});
+						} else {
+							return Err(StealthStreamPacketError::ArbitraryEndFrame {
+								message_id,
+								end_frame: message.content().to_vec(),
+							});
+						}
+					},
+				},
+				_ => {},
+			};
+		}
+
+		#[cfg(test)]
+		{
+			debug!(target: "test", "Message Completed.");
 			debug!(target: "test", "opcode: {:?}", opcode);
 			debug!(target: "test", "length: {:?}", length);
 			debug!(target: "test", "flag: {:?}", flag);
-			debug!(target: "test", "content: {:?}", content);
-			debug!(target: "test", "utf-8: {:?}", test_utf_8);
 		}
 
-		let packet = StealthStreamPacket {
-			opcode,
-			flag,
-			length,
-			content,
-		};
-
 		// Reserve the amount of memory needed for the next header.
-		src.reserve(6);
+		src.reserve(HEADER_LENGTH);
 
-		Ok(Some(packet))
+		Ok(Some(StealthStreamPacket::from_encoded(
+			opcode, flag, length, message, message_id,
+		)))
 	}
 }
 
@@ -197,9 +247,16 @@ impl Encoder<StealthStreamPacket> for StealthStreamCodec {
 		let length = u32::to_le_bytes(item.length as u32);
 
 		// Reserve space for opcode/flag/length prefix + content length
-		dst.reserve(1 + 1 + 4 + item.content.len());
-		dst.put_u8(item.opcode as u8);
-		dst.put_u8(item.flag as u8);
+		if item.needs_message_id() {
+			dst.reserve(1 + 1 + 4 + 16 + item.content.len());
+			dst.put_u8(item.opcode as u8);
+			dst.put_u8(item.flag as u8);
+			dst.extend_from_slice(&item.message_id.unwrap().0.to_bytes_le())
+		} else {
+			dst.reserve(1 + 1 + 4 + item.content.len());
+			dst.put_u8(item.opcode as u8);
+			dst.put_u8(item.flag as u8);
+		}
 
 		dst.extend_from_slice(&length);
 		dst.extend_from_slice(&item.content);
@@ -209,21 +266,22 @@ impl Encoder<StealthStreamPacket> for StealthStreamCodec {
 }
 
 #[cfg(test)]
-mod test {
+mod tests {
 
 	use futures_util::{SinkExt, StreamExt};
 	use rand::Rng;
 	use tokio::{
-		io::AsyncWriteExt,
 		net::{TcpListener, TcpStream},
 		sync::mpsc::Sender,
 	};
 	use tokio_util::codec::{FramedRead, FramedWrite};
-	use tracing::debug;
+	#[allow(unused_imports)]
+	use tracing::{error, level_filters::LevelFilter};
+	use uuid::Uuid;
 
 	use super::StealthStreamCodec;
 	use crate::protocol::{
-		framing::{FrameFlags, FrameOpcodes},
+		framing::{FrameFlags, FrameOpcodes, MessageId},
 		StealthStreamPacket, StealthStreamPacketError,
 	};
 
@@ -237,12 +295,13 @@ mod test {
 		let listener = TcpListener::bind(&address).await.unwrap();
 		tokio::spawn(async move {
 			let (socket, _) = listener.accept().await.expect("Failed to accept connections");
-			let mut framed = FramedRead::new(socket, StealthStreamCodec);
+			let mut framed = FramedRead::new(socket, StealthStreamCodec::default());
 
-			while let Some(packet) = framed.next().await {
-				let _ = sender.send(packet).await;
+			loop {
+				while let Some(packet) = framed.next().await {
+					let _ = sender.send(packet).await;
+				}
 			}
-			debug!("stream is closed");
 		});
 
 		address.to_string()
@@ -254,7 +313,7 @@ mod test {
 
 		let address = setup_test_server(tx).await;
 		let stream = TcpStream::connect(address).await.expect("couldn't setup TcpClient");
-		let mut framed = FramedWrite::new(stream, StealthStreamCodec);
+		let mut framed = FramedWrite::new(stream, StealthStreamCodec::default());
 
 		let content: Vec<u8> = "hello".as_bytes().to_vec();
 
@@ -263,6 +322,7 @@ mod test {
 			flag: FrameFlags::Complete,
 			length: content.len(),
 			content: content.clone(),
+			message_id: None,
 		};
 
 		// Send the packet
@@ -272,7 +332,7 @@ mod test {
 			.map_err(|e| {
 				// Map the error from the codec's error type to a standard error
 				// This may involve conversion logic as per your error handling strategy
-				eprintln!("Error sending packet: {:?}", e);
+				error!("Error sending packet: {:?}", e);
 				e
 			})
 			.expect("couldn't send the frame :(");
@@ -282,17 +342,82 @@ mod test {
 	}
 
 	#[tokio::test]
-	async fn test_early_eof() {
+	async fn test_negative_framing() {
+		//tracing_subscriber::fmt().with_max_level(LevelFilter::DEBUG).init();
 		let (tx, mut rx) = tokio::sync::mpsc::channel::<PacketResult>(5);
 		let address = setup_test_server(tx).await;
 		let stream = TcpStream::connect(address).await.expect("couldn't setup TcpClient");
-		let mut framed = FramedWrite::new(stream, StealthStreamCodec);
+		let (_, owned_write) = stream.into_split();
+		let mut framed = FramedWrite::new(owned_write, StealthStreamCodec::default());
 
-		framed.write_buffer_mut().extend_from_slice(&[0, 1]);
-		let mut test = framed.into_inner();
-		test.shutdown().await.expect("couldn't shutdown the tcp stream");
+		let content: Vec<u8> = "hello".as_bytes().to_vec();
 
-		let test = rx.recv().await;
-		assert!(test.is_none())
+		let packet = StealthStreamPacket {
+			opcode: FrameOpcodes::Binary,
+			flag: FrameFlags::Complete,
+			length: content.len(),
+			content: content.clone(),
+			message_id: None,
+		};
+
+		let arbitrary_end_frame = StealthStreamPacket {
+			opcode: FrameOpcodes::Binary,
+			flag: FrameFlags::End,
+			length: content.len(),
+			content: content.clone(),
+			message_id: Some(MessageId(Uuid::new_v4())),
+		};
+
+		let arbitrary_continuation_frame = StealthStreamPacket {
+			opcode: FrameOpcodes::Binary,
+			flag: FrameFlags::Continuation,
+			length: content.len(),
+			content: content.clone(),
+			message_id: Some(MessageId(Uuid::new_v4())),
+		};
+
+		// Send the packet
+		framed
+			.send(packet)
+			.await
+			.map_err(|e| {
+				eprintln!("Error sending packet: {:?}", e);
+				e
+			})
+			.expect("couldn't send the frame :(");
+
+		let resp = rx.recv().await;
+		assert!(resp.is_some_and(|v| v.is_ok_and(|v| v.content == content)));
+
+		/* Send the arbitrary end frame */
+		framed
+			.send(arbitrary_end_frame)
+			.await
+			.map_err(|e| {
+				error!("Error sending packet: {:?}", e);
+				e
+			})
+			.expect("couldn't send the frame :(");
+
+		let response = rx.recv().await;
+		assert!(
+			response.is_some_and(|v| v.is_err_and(|e| matches!(e, StealthStreamPacketError::ArbitraryEndFrame { .. })))
+		);
+
+		/* Send the Arbitrary Continuation Frame */
+		// Send the packet
+		framed
+			.send(arbitrary_continuation_frame)
+			.await
+			.map_err(|e| {
+				eprintln!("Error sending packet: {:?}", e);
+				e
+			})
+			.expect("couldn't send the frame :(");
+
+		let resp = rx.recv().await;
+		assert!(resp.is_some_and(
+			|v| v.is_err_and(|e| matches!(e, StealthStreamPacketError::ArbitraryContinuationFrame { .. }))
+		));
 	}
 }

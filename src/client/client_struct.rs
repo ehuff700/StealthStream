@@ -8,16 +8,21 @@ use std::{
 };
 
 use anyhow::anyhow;
+
+#[cfg(feature = "tls")]
 use rustls::{
 	client::{ServerCertVerified, ServerCertVerifier},
 	RootCertStore, ServerName,
 };
+
 use tokio::{net::TcpStream, signal};
+#[cfg(feature = "tls")]
 use tokio_rustls::{TlsConnector, TlsStream};
 use tracing::error;
 use uuid::Uuid;
 
 use super::ClientBuilder;
+#[cfg(feature = "tls")]
 use crate::ServerTlsStream;
 use crate::{
 	errors::ClientErrors,
@@ -30,7 +35,9 @@ use crate::{
 pub type ClientResult<T> = std::result::Result<T, ClientErrors>;
 
 /// TODO: fix this override / refactor?
+#[cfg(feature = "tls")]
 struct CertVerifier;
+#[cfg(feature = "tls")]
 impl ServerCertVerifier for CertVerifier {
 	fn verify_server_cert(
 		&self, _end_entity: &rustls::Certificate, _intermediates: &[rustls::Certificate], _server_name: &ServerName,
@@ -66,7 +73,8 @@ pub struct RawClient {
 impl RawClient {
 	/// Used by builder functions to create a new [RawClient]
 	pub(crate) async fn new(
-		address: SocketAddr, peer_address: AddressContext, _skip_certificate_validation: Option<bool>,
+		address: SocketAddr, peer_address: AddressContext,
+		#[cfg(feature = "tls")] _skip_certificate_validation: Option<bool>,
 	) -> ClientResult<Self> {
 		#[cfg(feature = "tls")]
 		{
@@ -141,7 +149,10 @@ impl RawClient {
 	/// Sends a message to/from the client to the stream.
 	pub async fn send(&self, message: StealthStreamMessage) -> ClientResult<()> {
 		if self.is_connected() {
-			self.raw_socket.write(message.into()).await.map_err(ClientErrors::from)
+			self.raw_socket
+				.write_all(message.to_message())
+				.await
+				.map_err(ClientErrors::from)
 		} else {
 			Err(StealthStreamPacketError::StreamClosed)?
 		}
@@ -225,9 +236,17 @@ impl Client {
 		let peer_address = AddressContext::ServerAddress(address);
 
 		let inner = if cfg!(feature = "tls") {
-			RawClient::new(address, peer_address, Some(self.skip_certificate_validation)).await?
+			RawClient::new(
+				address,
+				peer_address,
+				#[cfg(feature = "tls")]
+				Some(self.skip_certificate_validation),
+			)
+			.await?
 		} else {
-			RawClient::new(address, peer_address, None).await?
+			#[cfg(not(feature = "tls"))]
+			return RawClient::new(address, peer_address).await?;
+			unreachable!();
 		};
 
 		self.inner = Some(Arc::new(inner));
@@ -349,13 +368,14 @@ mod tests {
 	use pretty_assertions::assert_eq;
 	use rand::Rng;
 	use tokio::time::timeout;
-	use tracing::info;
+	#[allow(unused_imports)]
+	use tracing::{info, level_filters::LevelFilter};
 
 	use crate::{
 		client::ClientBuilder,
 		errors::ClientErrors,
 		pin_callback,
-		protocol::{StealthStreamMessage, StealthStreamPacket, StealthStreamPacketError},
+		protocol::{MessageData, StealthStreamMessage, StealthStreamPacket, StealthStreamPacketError},
 		server::{MessageCallback, Server, ServerBuilder},
 	};
 
@@ -431,13 +451,15 @@ mod tests {
 	async fn test_basic_send() {
 		let (server, client) = server_client_setup1!();
 
-		let message = super::StealthStreamMessage::Message("Test Message!".to_string());
+		let message = super::StealthStreamMessage::Message(MessageData::new("Test Message!", false));
 		assert!(client.send(message).await.is_ok());
 		drop(server)
 	}
 
 	#[tokio::test]
 	async fn test_basic_recieve() {
+		//tracing_subscriber::fmt().with_max_level(LevelFilter::DEBUG).init();
+
 		let (tx, mut rx) = tokio::sync::mpsc::channel(1);
 		let test_txt = "Test Message!";
 
@@ -452,11 +474,11 @@ mod tests {
 		tokio::time::sleep(Duration::from_millis(1)).await;
 
 		/* Test Successful Recieve */
-		let expected = StealthStreamMessage::Message(test_txt.to_string());
+		let expected = StealthStreamMessage::Message(MessageData::new(test_txt, true));
 		client.send(expected).await.expect("error sending message");
 
 		let received = rx.recv().await.expect("didn't receive valid stealthstream message");
-		let expected = StealthStreamMessage::Message(test_txt.to_string());
+		let expected = StealthStreamMessage::Message(MessageData::new(test_txt, true));
 
 		assert_eq!(received, expected, "the received message did not match the expected one");
 	}
@@ -491,7 +513,7 @@ mod tests {
 		assert!(received.is_err());
 
 		/* Assert that normal packets can be sent after bad ones */
-		let expected = StealthStreamMessage::Message("hey".to_string());
+		let expected = StealthStreamMessage::Message(MessageData::new("hey", false));
 		client.send(expected).await.unwrap();
 		let received = timeout(Duration::from_millis(300), rx.recv()).await;
 		assert!(received.is_ok_and(|v| v.is_some()));

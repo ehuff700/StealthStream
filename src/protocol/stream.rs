@@ -1,13 +1,10 @@
 use futures_util::{SinkExt, StreamExt};
-use tokio::{
-	io::{split, ReadHalf, WriteHalf},
-	net::TcpStream,
-	sync::Mutex,
-};
-
+#[cfg(feature = "tls")]
+use tokio::io::{split, ReadHalf, WriteHalf};
 #[cfg(not(feature = "tls"))]
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
-
+use tokio::{net::TcpStream, sync::Mutex};
+#[cfg(feature = "tls")]
 use tokio_rustls::TlsStream;
 use tokio_util::codec::{FramedRead, FramedWrite};
 
@@ -109,9 +106,9 @@ impl From<TcpStream> for StealthStream {
 	fn from(stream: TcpStream) -> Self {
 		let (read_half, write_half) = stream.into_split();
 		let framed_reader: FramedRead<OwnedReadHalf, StealthStreamCodec> =
-			FramedRead::new(read_half, StealthStreamCodec);
+			FramedRead::new(read_half, StealthStreamCodec::default());
 		let framed_writer: FramedWrite<OwnedWriteHalf, StealthStreamCodec> =
-			FramedWrite::new(write_half, StealthStreamCodec);
+			FramedWrite::new(write_half, StealthStreamCodec::default());
 
 		Self {
 			writer: Mutex::new(framed_writer),
@@ -124,8 +121,8 @@ impl From<TcpStream> for StealthStream {
 impl From<TlsStream<TcpStream>> for StealthStream {
 	fn from(stream: TlsStream<TcpStream>) -> Self {
 		let (read_half, write_half) = split(stream);
-		let framed_reader = FramedRead::new(read_half, StealthStreamCodec);
-		let framed_writer = FramedWrite::new(write_half, StealthStreamCodec);
+		let framed_reader = FramedRead::new(read_half, StealthStreamCodec::default());
+		let framed_writer = FramedWrite::new(write_half, StealthStreamCodec::default());
 		Self {
 			writer: Mutex::new(framed_writer),
 			reader: Mutex::new(framed_reader),

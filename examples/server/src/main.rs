@@ -1,6 +1,11 @@
 use std::{net::IpAddr, sync::Arc};
 
-use stealthstream::{client::RawClient, pin_callback, protocol::StealthStreamMessage, server::ServerBuilder};
+use stealthstream::{
+	client::RawClient,
+	pin_callback,
+	protocol::{MessageData, StealthStreamMessage},
+	server::ServerBuilder,
+};
 use tracing::{debug, info};
 use tracing_subscriber::filter::LevelFilter;
 
@@ -10,10 +15,10 @@ async fn callback_function(message_type: StealthStreamMessage, client: Arc<RawCl
 	if let StealthStreamMessage::Message(message) = message_type {
 		debug!("Received message: {:?}", message);
 		let _ = client
-			.send(StealthStreamMessage::Message("Hey from server".to_string()))
+			.send(StealthStreamMessage::Message(MessageData::new("Hey from server", true)))
 			.await;
-	} else if let StealthStreamMessage::Goodbye { code, reason } = message_type {
-		debug!("Received goodbye message: {:?} | {:?}", code, reason);
+	} else if let StealthStreamMessage::Goodbye(data) = message_type {
+		debug!("Received goodbye message: {:?} | {:?}", data.code(), data.reason());
 	}
 }
 

@@ -72,6 +72,7 @@ impl ClientBuilder {
 	/// Determines whether or not the client should skip certificate validation.
 	///
 	/// Skipping certificate validation should only be used for testing purposes **AND IS NOT SAFE** for production use.
+	#[cfg(feature = "tls")]
 	pub fn skip_certificate_validation(&mut self, value: bool) -> &mut Self {
 		self.skip_certificate_validation = value;
 		self

@@ -1,4 +1,4 @@
-use std::{fmt::Display, io::Read, sync::Arc, time::Duration};
+use std::{io::Read, sync::Arc, time::Duration};
 
 use thiserror::Error;
 use tracing::{debug, info};
@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 use super::{
 	constants::{DEFAULT_HANDSHAKE_LENGTH, HANDSHAKE_LENGTH_WITH_SESSION_ID, SUPPORTED_VERSIONS},
-	StealthStreamMessage, StealthStreamPacketError,
+	HandshakeData, StealthStreamMessage, StealthStreamPacketError,
 };
 use crate::{
 	client::{Client, ClientResult, RawClient},
@@ -21,15 +21,16 @@ pub struct Handshake {
 
 impl Handshake {
 	pub async fn start_server_handshake(client: &Arc<RawClient>) -> ServerResult<()> {
-		let result = tokio::time::timeout(Duration::from_millis(200), client.receive())
+		// TODO: make this timeout configurable
+		let result = tokio::time::timeout(Duration::from_millis(1000), client.receive())
 			.await
 			.map_err(|_| ServerErrors::from(HandshakeErrors::HandshakeTimeout))?;
 
 		match result {
 			Some(message) => {
 				match message {
-					Ok(StealthStreamMessage::Handshake { version, .. }) => {
-						debug!("Received version {} handshake from {:?}", version, client.peer_address());
+					Ok(StealthStreamMessage::Handshake(data)) => {
+						debug!("Received version {} handshake from {:?}", data.version(), client.peer_address());
 
 						// TODO: do something with session_id
 						info!("Upgraded connection to StealthStream for client {:?}", client.peer_address());
@@ -46,15 +47,13 @@ impl Handshake {
 	/// Sends the client handshake message to the server.
 	pub async fn start_client_handshake(client: &Client) -> ClientResult<()> {
 		client
-			.send(StealthStreamMessage::Handshake {
-				version: 1,
-				session_id: client.session_id,
-			})
+			.send(StealthStreamMessage::Handshake(HandshakeData::new(1, client.session_id)))
 			.await
 	}
 
 	/// Utility function that validates a [StealthStreamMessage::Handshake]
 	/// message.
+	/// TODO: make this better because wtf is this
 	pub fn parse_handshake(mut message_buffer: &[u8]) -> Result<Self, HandshakeErrors> {
 		let mut session_id: Option<Uuid> = None;
 		let version;
@@ -88,34 +87,24 @@ impl Handshake {
 	}
 }
 
-impl From<Handshake> for StealthStreamMessage {
-	fn from(value: Handshake) -> StealthStreamMessage {
-		StealthStreamMessage::Handshake {
-			version: value.version,
-			session_id: value.session_id,
-		}
+impl From<Handshake> for HandshakeData {
+	fn from(value: Handshake) -> Self {
+		HandshakeData::new(value.version, value.session_id)
 	}
 }
 
 #[derive(Debug, Error)]
 pub enum HandshakeErrors {
+	#[error("Arbitrary bytes detected")]
 	ArbitraryBytes,
+	#[error("Handshake not received within the configured timeout")]
 	HandshakeTimeout,
+	#[error("Error reading from buffer: {0}")]
 	BufferReadError(#[from] tokio::io::Error),
+	#[error("Invalid Session ID: {0}")]
 	InvalidSessionId(Uuid),
+	#[error("Unsupported version: {0}")]
 	UnsupportedVersion(u8),
+	#[error("Client attempted to skip handshake")]
 	SkippedHandshake,
-}
-
-impl Display for HandshakeErrors {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		match self {
-			HandshakeErrors::HandshakeTimeout => write!(f, "Handshake not received within the configured timeout"),
-			HandshakeErrors::ArbitraryBytes => write!(f, "Arbitrary Bytes detected"),
-			HandshakeErrors::InvalidSessionId(uuid) => write!(f, "Invalid Session ID: {}", uuid),
-			HandshakeErrors::UnsupportedVersion(version) => write!(f, "Unsupported Version: {}", version),
-			HandshakeErrors::SkippedHandshake => write!(f, "Client attempted to skip handshake"),
-			HandshakeErrors::BufferReadError(e) => write!(f, "Error reading from buffer: {}", e),
-		}
-	}
 }

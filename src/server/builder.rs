@@ -1,16 +1,24 @@
 use std::{
+	net::{IpAddr, Ipv4Addr, SocketAddr},
+	sync::Arc,
+};
+
+#[cfg(feature = "tls")]
+use std::{
 	fs::File,
 	io::BufReader,
-	net::{IpAddr, Ipv4Addr, SocketAddr},
 	path::{Path, PathBuf},
-	sync::Arc,
 };
 
 use super::{server_struct::Server, MessageCallback, ServerResult};
 use crate::{client::RawClient, pin_callback, protocol::StealthStreamMessage};
+
+#[cfg(feature = "tls")]
 use rustls::Certificate;
+#[cfg(feature = "tls")]
 use rustls_pemfile::{certs, pkcs8_private_keys};
 use tokio::net::TcpListener;
+#[cfg(feature = "tls")]
 use tokio_rustls::rustls::ServerConfig;
 use tracing::debug;
 
@@ -94,7 +102,8 @@ impl ServerBuilder {
 		let listener = TcpListener::bind(address).await?;
 		let event_handler = self.event_handler.unwrap_or_else(|| Self::default_event_handler());
 
-		if cfg!(feature = "tls") {
+		#[cfg(feature = "tls")]
+		{
 			let cert_file_path = self
 				.cert_file_path
 				.expect("Please provide a valid certificate file path or disable TLS.");
@@ -121,13 +130,14 @@ impl ServerBuilder {
 				event_handler,
 				Some(config),
 			))
-		} else {
+		}
+		#[cfg(not(feature = "tls"))]
+		{
 			Ok(Server::new(
 				listener,
 				SocketAddr::new(self.address, self.port),
 				self.poke_delay,
 				event_handler,
-				None,
 			))
 		}
 	}
