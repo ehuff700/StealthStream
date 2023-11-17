@@ -1,4 +1,4 @@
-use std::{sync::Arc, time::Duration};
+use std::{io::Cursor, sync::Arc, time::Duration};
 
 use thiserror::Error;
 use tokio::io::AsyncReadExt;
@@ -22,13 +22,14 @@ pub struct Handshake {
 }
 
 impl Handshake {
-	pub async fn start_server_handshake(client: &Arc<RawClient>) -> ServerResult<()> {
-		// TODO: make this timeout configurable
-		let result = tokio::time::timeout(Duration::from_millis(1000), client.receive())
-			.await
-			.map_err(|_| ServerErrors::from(HandshakeErrors::HandshakeTimeout))?;
+	pub async fn start_server_handshake(client: &Arc<RawClient>, handshake_timeout: u64) -> ServerResult<()> {
+		let configured_timeout = Duration::from_millis(handshake_timeout);
 
-		match result {
+		let handshake_result = tokio::time::timeout(configured_timeout, client.receive())
+			.await
+			.map_err(|_| ServerErrors::from(HandshakeErrors::HandshakeTimeout(configured_timeout)))?;
+
+		match handshake_result {
 			Some(message) => {
 				match message {
 					Ok(StealthStreamMessage::Handshake(data)) => {
@@ -55,37 +56,38 @@ impl Handshake {
 
 	/// Utility function that validates a [StealthStreamMessage::Handshake]
 	/// message.
-	/// TODO: make this better because wtf is this
-	pub async fn parse_handshake(mut message_buffer: &[u8]) -> Result<Self, HandshakeErrors> {
-		let mut session_id: Option<Uuid> = None;
-		let version;
+	pub async fn parse_handshake(message_buffer: &[u8]) -> Result<Self, HandshakeErrors> {
+		let mut reader = Cursor::new(message_buffer);
 
-		if message_buffer.len() == DEFAULT_HANDSHAKE_LENGTH || message_buffer.len() == HANDSHAKE_LENGTH_WITH_SESSION_ID
-		{
-			let mut version_buffer = [0u8; 1];
-			message_buffer.read_exact(&mut version_buffer).await?;
-			version = version_buffer[0];
-
-			if message_buffer.len() == HANDSHAKE_LENGTH_WITH_SESSION_ID {
-				let mut session_id_buffer = [0u8; 16];
-				message_buffer.read_exact(&mut session_id_buffer).await?;
-				session_id = Some(Uuid::from_bytes(session_id_buffer));
-			}
-		} else {
+		if ![DEFAULT_HANDSHAKE_LENGTH, HANDSHAKE_LENGTH_WITH_SESSION_ID].contains(&message_buffer.len()) {
 			return Err(HandshakeErrors::ArbitraryBytes);
 		}
+
+		let version = reader.read_u8().await?;
 
 		if !SUPPORTED_VERSIONS.contains(&version) {
 			return Err(HandshakeErrors::UnsupportedVersion(version));
 		}
 
-		if let Some(session_id) = session_id {
-			if session_id.is_nil() || session_id.get_version_num() != 4 {
-				return Err(HandshakeErrors::InvalidSessionId(session_id));
-			}
-		}
+		let session_id = if message_buffer.len() == HANDSHAKE_LENGTH_WITH_SESSION_ID {
+			Self::parse_session_id(&mut reader).await?
+		} else {
+			None
+		};
 
 		Ok(Self { version, session_id })
+	}
+
+	async fn parse_session_id(message_buffer: &mut Cursor<&[u8]>) -> Result<Option<Uuid>, HandshakeErrors> {
+		let slice = message_buffer.read_i128().await?.to_be_bytes();
+
+		let session_id = Uuid::from_slice(&slice).map_err(HandshakeErrors::from)?;
+
+		if session_id.is_nil() || session_id.get_version_num() != 4 {
+			return Err(HandshakeErrors::InvalidSessionId(session_id));
+		}
+
+		Ok(Some(session_id))
 	}
 }
 
@@ -97,12 +99,14 @@ impl From<Handshake> for HandshakeData {
 pub enum HandshakeErrors {
 	#[error("Arbitrary bytes detected")]
 	ArbitraryBytes,
-	#[error("Handshake not received within the configured timeout")]
-	HandshakeTimeout,
+	#[error("Handshake not received within the configured timeout: {0:?}")]
+	HandshakeTimeout(Duration),
 	#[error("Error reading from buffer: {0}")]
 	BufferReadError(#[from] tokio::io::Error),
 	#[error("Invalid Session ID: {0}")]
 	InvalidSessionId(Uuid),
+	#[error("error parsing session id: {0}")]
+	SessionIdParseError(#[from] uuid::Error),
 	#[error("Unsupported version: {0}")]
 	UnsupportedVersion(u8),
 	#[error("Client attempted to skip handshake")]

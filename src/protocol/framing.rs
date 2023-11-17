@@ -1,4 +1,5 @@
 use bytes::{Buf, BytesMut};
+#[cfg(test)]
 use tracing::debug;
 use uuid::Uuid;
 
@@ -136,7 +137,9 @@ impl LengthPrefix {
 	pub fn try_from_buffer(src: &mut BytesMut) -> Result<Self, StealthStreamPacketError> {
 		let length_prefix = u32::from_le_bytes([src[0], src[1], src[2], src[3]]);
 
+		#[cfg(test)]
 		debug!("what is length prefix: {:?}", length_prefix);
+
 		if length_prefix > MAX_COMPLETE_FRAME_LENGTH {
 			src.advance(src.len());
 			Err(StealthStreamPacketError::LengthOutOfBounds(length_prefix as usize))

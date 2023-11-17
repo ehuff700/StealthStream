@@ -7,6 +7,7 @@ use tokio::{net::TcpStream, sync::Mutex};
 #[cfg(feature = "tls")]
 use tokio_rustls::TlsStream;
 use tokio_util::codec::{FramedRead, FramedWrite};
+#[cfg(test)]
 use tracing::debug;
 
 use super::{StealthStreamCodec, StealthStreamMessage, StealthStreamPacket, StealthStreamPacketError};
@@ -45,16 +46,17 @@ impl StealthStream {
 	pub async fn write_all(&self, data: Vec<StealthStreamPacket>) -> Result<(), StealthStreamPacketError> {
 		let mut writer = self.writer.lock().await;
 		for packet in data {
+			#[cfg(test)]
 			debug!(
-				"packet| {} | {:?}, {:?} | {}",
+				"packet| len: {} | flag: {:?}, message_id: {:?} | content len: {}",
 				packet.length(),
 				packet.flag(),
 				packet.message_id(),
 				packet.content().len()
 			);
 			writer.feed(packet).await?;
-			writer.flush().await?;
 		}
+		writer.flush().await?;
 		Ok(())
 	}
 

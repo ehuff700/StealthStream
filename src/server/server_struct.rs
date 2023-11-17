@@ -17,6 +17,7 @@ pub struct Server {
 	listener: TcpListener,
 	address: SocketAddr,
 	poke_delay: u64,
+	handshake_timeout: u64,
 	event_handler: Arc<dyn MessageCallback>,
 	#[cfg(feature = "tls")]
 	tls_config: Arc<ServerConfig>,
@@ -24,8 +25,8 @@ pub struct Server {
 impl Server {
 	/// Used internally by the ServerBuilder to create a new [Server] instance.
 	pub(super) fn new(
-		listener: TcpListener, address: SocketAddr, poke_delay: u64, event_handler: Arc<dyn MessageCallback>,
-		#[cfg(feature = "tls")] server_config: Option<ServerConfig>,
+		listener: TcpListener, address: SocketAddr, poke_delay: u64, handshake_timeout: u64,
+		event_handler: Arc<dyn MessageCallback>, #[cfg(feature = "tls")] server_config: Option<ServerConfig>,
 	) -> Self {
 		#[cfg(feature = "signals")] // TODO: implement this properly or not at all?
 		tokio::task::spawn({
@@ -40,6 +41,7 @@ impl Server {
 			listener,
 			address,
 			poke_delay,
+			handshake_timeout,
 			event_handler,
 			#[cfg(feature = "tls")]
 			tls_config: Arc::new(server_config.unwrap()),
@@ -85,14 +87,12 @@ impl Server {
 	/// Spawns a new read/write task for the provided client, as well as
 	/// creating a poke task to keep the connection alive.
 	async fn handle_client(&self, client: Arc<RawClient>) {
-		let handshake_result = Handshake::start_server_handshake(&client).await;
+		let timeout = self.handshake_timeout;
+		let handshake_result = Handshake::start_server_handshake(&client, timeout).await;
 
 		if let Err(e) = handshake_result {
 			error!("Error handshaking for client: {:?}", e);
-			client
-				.disconnect_with_reason(INVALID_HANDSHAKE, &e.to_string())
-				.await
-				.unwrap();
+			let _ = client.disconnect_with_reason(INVALID_HANDSHAKE, &e.to_string()).await;
 			drop(client);
 		} else {
 			let delay = self.poke_delay;
@@ -146,13 +146,16 @@ impl Server {
 									break;
 								} else {
 									error!("Error reading from client ({:?}): {:?}", read_client.peer_address(), e);
-									// TODO: send the error back to the client
-									// here
+									let _ = read_client
+										.send(StealthStreamMessage::create_error_message(1, &e.to_string()))
+										.await;
+
+									// TODO: Review better error codes
+									// perchance?
 								}
 							},
 						};
 					}
-					//debug!("server: socket closed");
 				}
 			}
 		});
@@ -176,27 +179,23 @@ impl Server {
 	}
 
 	/* Getters */
-	pub fn address(&self) -> SocketAddr {
-		self.address
-	}
+	pub fn address(&self) -> SocketAddr { self.address }
 }
-
 #[cfg(test)]
 mod tests {
 	use std::{sync::Arc, time::Duration};
 
-	use super::Server;
-	use crate::client::ClientBuilder;
-	use crate::protocol::control_messages::HandshakeData;
-	use crate::protocol::data_messages::MessageData;
-	use crate::{
-		pin_callback,
-		protocol::StealthStreamMessage,
-		server::{MessageCallback, ServerBuilder},
-	};
 	use rand::Rng;
 	use tokio::{io::AsyncWriteExt, net::TcpStream, time::timeout};
 	use tracing::info;
+
+	use super::Server;
+	use crate::{
+		client::ClientBuilder,
+		pin_callback,
+		protocol::{control_messages::HandshakeData, data_messages::MessageData, StealthStreamMessage},
+		server::{MessageCallback, ServerBuilder},
+	};
 
 	macro_rules! server_client_setup {
 		() => {{

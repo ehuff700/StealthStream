@@ -31,6 +31,9 @@ pub struct ServerBuilder {
 	port: u16,
 	/// The delay between each [StealthStreamMessage::Poke] message in ms.
 	poke_delay: u64,
+	/// The accepted delay (in ms) in which a client must negotiate a successful
+	/// handshake.
+	handshake_timeout: u64,
 	/// The event handler that will be invoked when a [StealthStreamMessage] is
 	/// received
 	event_handler: Option<Arc<dyn MessageCallback>>,
@@ -48,6 +51,7 @@ impl ServerBuilder {
 			address: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
 			port: 7007,
 			poke_delay: 5000,
+			handshake_timeout: 2000,
 			event_handler: None,
 			#[cfg(feature = "tls")]
 			cert_file_path: None,
@@ -75,6 +79,11 @@ impl ServerBuilder {
 	/// 5000 ms by default.
 	pub fn set_poke_delay(mut self, poke_delay: u64) -> Self {
 		self.poke_delay = poke_delay;
+		self
+	}
+
+	pub fn set_handshake_timeout(mut self, handshake_timeout: u64) -> Self {
+		self.handshake_timeout = handshake_timeout;
 		self
 	}
 
@@ -133,6 +142,7 @@ impl ServerBuilder {
 				listener,
 				SocketAddr::new(self.address, self.port),
 				self.poke_delay,
+				self.handshake_timeout,
 				event_handler,
 				Some(config),
 			))
@@ -143,6 +153,7 @@ impl ServerBuilder {
 				listener,
 				SocketAddr::new(self.address, self.port),
 				self.poke_delay,
+				self.handshake_timeout,
 				event_handler,
 			))
 		}
