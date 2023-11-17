@@ -51,7 +51,7 @@ impl StealthStream {
 				"packet| len: {} | flag: {:?}, message_id: {:?} | content len: {}",
 				packet.length(),
 				packet.flag(),
-				packet.message_id(),
+				packet.frame_id(),
 				packet.content().len()
 			);
 			writer.feed(packet).await?;

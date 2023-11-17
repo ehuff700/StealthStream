@@ -8,7 +8,7 @@ use tokio_util::codec::{Decoder, Encoder};
 use tracing::debug;
 
 use super::{
-	constants::HEADER_LENGTH,
+	constants::MINIMUM_HEADER_LENGTH,
 	framing::{FrameFlags, LengthPrefix, MessageContent},
 	HandshakeErrors,
 };
@@ -57,7 +57,7 @@ pub struct StealthStreamPacket {
 	flag: FrameFlags,
 	#[getter(skip)]
 	length: usize,
-	message_id: Option<FrameIdentifier>,
+	frame_id: Option<FrameIdentifier>,
 	#[getter(skip)]
 	content: Vec<u8>,
 }
@@ -70,7 +70,7 @@ impl StealthStreamPacket {
 			opcode,
 			flag,
 			length: content.len(),
-			message_id,
+			frame_id: message_id,
 			content,
 		}
 	}
@@ -82,7 +82,7 @@ impl StealthStreamPacket {
 			opcode: FrameOpcodes::try_from(opcode).unwrap(),
 			flag: FrameFlags::Complete,
 			length,
-			message_id: None,
+			frame_id: None,
 			content,
 		}
 	}
@@ -98,7 +98,7 @@ impl StealthStreamPacket {
 			flag,
 			length,
 			content,
-			message_id,
+			frame_id: message_id,
 		}
 	}
 
@@ -126,7 +126,7 @@ impl From<StealthStreamPacket> for Vec<u8> {
 			dst.reserve(1 + 1 + 4 + 16 + packet.content.len());
 			dst.put_u8(packet.opcode as u8);
 			dst.put_u8(packet.flag as u8);
-			dst.extend_from_slice(&packet.message_id.unwrap().0.into_bytes())
+			dst.extend_from_slice(&packet.frame_id.unwrap().0.into_bytes())
 		} else {
 			dst.reserve(1 + 1 + 4 + packet.content.len());
 			dst.put_u8(packet.opcode as u8);
@@ -154,7 +154,7 @@ impl Decoder for StealthStreamCodec {
 
 	fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
 		loop {
-			if src.len() < HEADER_LENGTH {
+			if src.len() < MINIMUM_HEADER_LENGTH {
 				return Ok(None);
 			}
 
@@ -203,8 +203,10 @@ impl Decoder for StealthStreamCodec {
 				match flag {
 					FrameFlags::Beginning => {
 						self.message_buffers.insert(message_id, message.clone());
-						if src.len() > HEADER_LENGTH {
+						if src.len() > MINIMUM_HEADER_LENGTH {
 							continue;
+						} else {
+							return Ok(None);
 						}
 					},
 					FrameFlags::Continuation | FrameFlags::End => match self.message_buffers.get_mut(&message_id) {
@@ -220,8 +222,10 @@ impl Decoder for StealthStreamCodec {
 									Some(message_id),
 								)));
 							};
-							if src.len() > HEADER_LENGTH {
+							if src.len() > MINIMUM_HEADER_LENGTH {
 								continue;
+							} else {
+								return Ok(None);
 							}
 						},
 						None => {
@@ -251,15 +255,21 @@ impl Decoder for StealthStreamCodec {
 			}
 
 			// Reserve the amount of memory needed for the next header.
-			src.reserve(HEADER_LENGTH);
+			src.reserve(MINIMUM_HEADER_LENGTH);
 
-			return Ok(Some(StealthStreamPacket::from_encoded(
-				opcode,
-				flag,
-				length_prefix,
-				message,
-				message_id,
-			)));
+			if matches!(flag, FrameFlags::Complete) {
+				return Ok(Some(StealthStreamPacket::from_encoded(
+					opcode,
+					flag,
+					length_prefix,
+					message,
+					message_id,
+				)));
+			} else if src.len() > MINIMUM_HEADER_LENGTH {
+				continue;
+			} else {
+				return Ok(None);
+			}
 		}
 	}
 }
@@ -276,7 +286,7 @@ impl Encoder<StealthStreamPacket> for StealthStreamCodec {
 			dst.extend_from_slice(&length);
 			dst.put_u8(item.opcode as u8);
 			dst.put_u8(item.flag as u8);
-			dst.extend_from_slice(&item.message_id.unwrap().0.to_bytes_le())
+			dst.extend_from_slice(&item.frame_id.unwrap().0.to_bytes_le())
 		} else {
 			dst.reserve(4 + 1 + 1 + item.content.len());
 			dst.extend_from_slice(&length);
@@ -293,14 +303,14 @@ impl Encoder<StealthStreamPacket> for StealthStreamCodec {
 #[cfg(test)]
 mod tests {
 	use futures_util::{SinkExt, StreamExt};
-	use rand::Rng;
+	use rand::{distributions::Alphanumeric, Rng};
 	use tokio::{
 		net::{TcpListener, TcpStream},
 		sync::mpsc::Sender,
 	};
 	use tokio_util::codec::{FramedRead, FramedWrite};
 	#[allow(unused_imports)]
-	use tracing::{error, level_filters::LevelFilter};
+	use tracing::{debug, error, level_filters::LevelFilter};
 	use uuid::Uuid;
 
 	use super::StealthStreamCodec;
@@ -347,7 +357,7 @@ mod tests {
 			flag: FrameFlags::Complete,
 			length: content.len(),
 			content: content.clone(),
-			message_id: None,
+			frame_id: None,
 		};
 
 		// Send the packet
@@ -381,7 +391,7 @@ mod tests {
 				opcode: FrameOpcodes::Binary,
 				flag: FrameFlags::Complete,
 				length: content.len(),
-				message_id: None,
+				frame_id: None,
 				content: content.as_bytes().to_vec(),
 			})
 			.await
@@ -396,7 +406,7 @@ mod tests {
 				opcode: FrameOpcodes::Binary,
 				flag: FrameFlags::Beginning,
 				length: content.len(),
-				message_id: Some(FrameIdentifier(Uuid::new_v4())),
+				frame_id: Some(FrameIdentifier(Uuid::new_v4())),
 				content: content.as_bytes().to_vec(),
 			})
 			.await
@@ -423,7 +433,7 @@ mod tests {
 			flag: FrameFlags::Complete,
 			length: content.len(),
 			content: content.clone(),
-			message_id: None,
+			frame_id: None,
 		};
 
 		let arbitrary_end_frame = StealthStreamPacket {
@@ -431,7 +441,7 @@ mod tests {
 			flag: FrameFlags::End,
 			length: content.len(),
 			content: content.clone(),
-			message_id: Some(FrameIdentifier(Uuid::new_v4())),
+			frame_id: Some(FrameIdentifier(Uuid::new_v4())),
 		};
 
 		let arbitrary_continuation_frame = StealthStreamPacket {
@@ -439,7 +449,7 @@ mod tests {
 			flag: FrameFlags::Continuation,
 			length: content.len(),
 			content: content.clone(),
-			message_id: Some(FrameIdentifier(Uuid::new_v4())),
+			frame_id: Some(FrameIdentifier(Uuid::new_v4())),
 		};
 
 		// Send the packet
@@ -487,9 +497,83 @@ mod tests {
 		));
 	}
 
+	#[tokio::test]
+	async fn test_interleaved_fragmentation() {
+		//tracing_subscriber::fmt().with_max_level(LevelFilter::DEBUG).init();
+		let (tx, mut rx) = tokio::sync::mpsc::channel::<PacketResult>(5);
+		let address = setup_test_server(tx).await;
+		let stream = TcpStream::connect(address).await.expect("couldn't setup TcpClient");
+		let (_, owned_write) = stream.into_split();
+		let mut framed = FramedWrite::new(owned_write, StealthStreamCodec::default());
+
+		let mut first_packet_content: Vec<u8> = generate_long_string(16).into_bytes();
+		let mut second_packet_content: Vec<u8> = generate_long_string(16).into_bytes();
+		assert_ne!(first_packet_content, second_packet_content);
+
+		let test_end: Vec<u8> = "END".to_string().into_bytes();
+
+		let first_frame_id = Some(FrameIdentifier(Uuid::new_v4()));
+		let second_frame_id = Some(FrameIdentifier(Uuid::new_v4()));
+
+		let first_packet = StealthStreamPacket {
+			opcode: FrameOpcodes::Binary,
+			flag: FrameFlags::Beginning,
+			length: first_packet_content.len(),
+			content: first_packet_content.clone(),
+			frame_id: first_frame_id,
+		};
+
+		let first_end_packet = StealthStreamPacket {
+			opcode: FrameOpcodes::Binary,
+			flag: FrameFlags::End,
+			length: test_end.len(),
+			content: test_end.clone(),
+			frame_id: first_frame_id,
+		};
+
+		let second_packet = StealthStreamPacket {
+			opcode: FrameOpcodes::Binary,
+			flag: FrameFlags::Beginning,
+			length: second_packet_content.len(),
+			content: second_packet_content.clone(),
+			frame_id: second_frame_id,
+		};
+
+		let second_end_packet = StealthStreamPacket {
+			opcode: FrameOpcodes::Binary,
+			flag: FrameFlags::End,
+			length: test_end.len(),
+			content: test_end.clone(),
+			frame_id: second_frame_id,
+		};
+
+		framed.send(first_packet).await.expect("couldn't send first packet");
+
+		framed.send(second_packet).await.expect("couldn't send second packet");
+
+		framed
+			.send(first_end_packet)
+			.await
+			.expect("couldn't send first end packet");
+
+		// Here we test that the message matches the expected content ()
+		let resp = rx.recv().await;
+		first_packet_content.append(&mut test_end.clone());
+		assert!(resp.is_some_and(|v| v.is_ok_and(|v| v.content == first_packet_content)));
+
+		framed
+			.send(second_end_packet)
+			.await
+			.expect("couldn't send second end packet");
+
+		let resp = rx.recv().await;
+		second_packet_content.append(&mut test_end.clone());
+		assert!(resp.is_some_and(|v| v.is_ok_and(|v| v.content == second_packet_content)));
+	}
+
 	fn generate_long_string(length_kb: usize) -> String {
 		let length = 1024 * length_kb; // Convert KB to bytes (characters)
-		let repeated_char = "Abc123"; // You can choose any character
-		repeated_char.to_string().repeat(length)
+		let mut rng = rand::thread_rng();
+		(0..length).map(|_| rng.sample(Alphanumeric) as char).collect()
 	}
 }
