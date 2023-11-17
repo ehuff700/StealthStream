@@ -19,7 +19,7 @@ pub const ACKNOWLEDGEMENT_OPCODE: u8 = 0x4; // TODO: implement
 /// The maximum length of a complete frame, in bytes.
 pub const MAX_COMPLETE_FRAME_LENGTH: u32 = 16 * 1024;
 /// The maximum length of a message that can be sent over a Stealth Stream.
-pub const MAX_MESSAGE_LENGTH: u32 = 16 * 1024 * 1024; // TODO: implement
+pub const _MAX_MESSAGE_LENGTH: u32 = 16 * 1024 * 1024; // TODO: implement
 pub const HEADER_LENGTH: usize = 6;
 
 /* Goodbye Codes */

@@ -530,6 +530,8 @@ mod tests {
 			}
 		});
 
+		tokio::time::sleep(Duration::from_millis(500)).await;
+
 		/* Test Message Fragmentation */
 		let gen = generate_long_string(3);
 		let result = client.send(StealthStreamMessage::create_utf8_message(&gen)).await;
@@ -538,10 +540,12 @@ mod tests {
 		assert!(test.is_some_and(|v| v.to_string().contains("Abc123")));
 
 		/* Test Successful Send */
+		println!(); // lag the message
 		let result = client.send(StealthStreamMessage::create_utf8_message("hi")).await;
 		assert!(result.is_ok());
+
 		let test = rx.recv().await;
-		assert!(test.is_some_and(|v| v.to_string().contains("hi")));
+		assert_eq!(Some(StealthStreamMessage::create_utf8_message("hi")), test);
 	}
 
 	fn generate_long_string(length_kb: usize) -> String {

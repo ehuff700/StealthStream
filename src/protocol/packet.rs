@@ -12,10 +12,7 @@ use super::{
 	framing::{FrameFlags, LengthPrefix, MessageContent},
 	HandshakeErrors,
 };
-use crate::protocol::{
-	constants::MAX_COMPLETE_FRAME_LENGTH,
-	framing::{FrameOpcodes, MessageId},
-};
+use crate::protocol::framing::{FrameOpcodes, MessageId};
 
 #[derive(Debug, Error)]
 pub enum StealthStreamPacketError {
@@ -50,7 +47,7 @@ pub enum StealthStreamPacketError {
 	StreamClosed,
 }
 
-#[derive(Debug, Getters)]
+#[derive(Debug, Getters, PartialEq)]
 pub struct StealthStreamPacket {
 	#[getter(skip)]
 	opcode: FrameOpcodes,
@@ -161,8 +158,8 @@ impl Decoder for StealthStreamCodec {
 
 			// Parses the length prefix from the first 4 bytes, returning an error if it's
 			// out of bounds.
-			let length_prefix = LengthPrefix::try_from_v2(src)?;
-			let _bytes_to_read = match length_prefix.check_buffer_length_v2(src) {
+			let length_prefix = LengthPrefix::try_from_buffer(src)?;
+			let _bytes_to_read = match length_prefix.check_buffer_length(src) {
 				None => return Ok(None),
 				Some(bytes_read) => bytes_read,
 			};
@@ -290,7 +287,6 @@ impl Encoder<StealthStreamPacket> for StealthStreamCodec {
 
 #[cfg(test)]
 mod tests {
-
 	use futures_util::{SinkExt, StreamExt};
 	use rand::Rng;
 	use tokio::{
@@ -306,6 +302,7 @@ mod tests {
 	use crate::protocol::{
 		framing::{FrameFlags, FrameOpcodes, MessageId},
 		StealthStreamPacket, StealthStreamPacketError,
+		StealthStreamPacketError::LengthOutOfBounds,
 	};
 
 	type PacketResult = Result<StealthStreamPacket, StealthStreamPacketError>;
@@ -362,6 +359,47 @@ mod tests {
 
 		let test = rx.recv().await;
 		assert!(test.is_some_and(|v| v.is_ok_and(|v| v.content == content)))
+	}
+
+	#[tokio::test]
+	async fn test_frame_size_overflow() {
+		//tracing_subscriber::fmt().with_max_level(LevelFilter::DEBUG).init();
+		let (tx, mut rx) = tokio::sync::mpsc::channel::<PacketResult>(5);
+		let address = setup_test_server(tx).await;
+		let stream = TcpStream::connect(address).await.expect("couldn't setup TcpClient");
+		let (_, owned_write) = stream.into_split();
+		let mut framed = FramedWrite::new(owned_write, StealthStreamCodec::default());
+
+		let content: String = generate_long_string(50);
+		framed
+			.send(StealthStreamPacket {
+				opcode: FrameOpcodes::Binary,
+				flag: FrameFlags::Complete,
+				length: content.len(),
+				message_id: None,
+				content: content.as_bytes().to_vec(),
+			})
+			.await
+			.expect("couldn't send packet");
+		framed.flush().await.unwrap();
+
+		let resp = rx.recv().await;
+		assert!(matches!(resp, Some(Err(LengthOutOfBounds(_)))));
+
+		framed
+			.send(StealthStreamPacket {
+				opcode: FrameOpcodes::Binary,
+				flag: FrameFlags::Beginning,
+				length: content.len(),
+				message_id: Some(MessageId(Uuid::new_v4())),
+				content: content.as_bytes().to_vec(),
+			})
+			.await
+			.expect("couldn't send packet");
+		framed.flush().await.unwrap();
+
+		let resp = rx.recv().await;
+		assert!(matches!(resp, Some(Err(LengthOutOfBounds(_)))))
 	}
 
 	#[tokio::test]
@@ -442,5 +480,11 @@ mod tests {
 		assert!(resp.is_some_and(
 			|v| v.is_err_and(|e| matches!(e, StealthStreamPacketError::ArbitraryContinuationFrame { .. }))
 		));
+	}
+
+	fn generate_long_string(length_kb: usize) -> String {
+		let length = 1024 * length_kb; // Convert KB to bytes (characters)
+		let repeated_char = "Abc123"; // You can choose any character
+		repeated_char.to_string().repeat(length)
 	}
 }
