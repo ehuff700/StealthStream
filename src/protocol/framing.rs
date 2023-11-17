@@ -162,9 +162,9 @@ impl LengthPrefix {
 }
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
-pub struct MessageId(pub(crate) Uuid);
-impl MessageId {
-	/// Converts a [buffer](BytesMut) into a [MessageId].
+pub struct FrameIdentifier(pub(crate) Uuid);
+impl FrameIdentifier {
+	/// Converts a [buffer](BytesMut) into a [FrameIdentifier].
 	///
 	/// This method will internally advance the cursor by 16 bytes internally.
 	pub fn try_from(src: &mut BytesMut) -> Result<Self, StealthStreamPacketError> {
@@ -173,9 +173,9 @@ impl MessageId {
 		}
 
 		let id = src.get_i128_le().to_le_bytes();
-		let uuid = Uuid::from_slice(&id)?;
-		let message_id = MessageId(uuid);
-		Ok(message_id)
+		let uuid: Uuid = Uuid::from_slice(&id)?;
+		let frame_identifier = FrameIdentifier(uuid);
+		Ok(frame_identifier)
 	}
 }
 

@@ -12,7 +12,7 @@ use crate::protocol::{
 		ERROR_OPCODE, GOODBYE_OPCODE, GRACEFUL, HANDSHAKE_OPCODE, HEARTBEAT_OPCODE, INVALID_HANDSHAKE,
 		MAX_COMPLETE_FRAME_LENGTH, MESSAGE_OPCODE, SERVER_RESTARTING, UNKNOWN,
 	},
-	framing::{FrameFlags, FrameOpcodes, MessageId},
+	framing::{FrameFlags, FrameIdentifier, FrameOpcodes},
 	StealthStreamPacket, StealthStreamPacketError,
 };
 
@@ -46,7 +46,7 @@ pub trait StealthStreamPacketParser {
 				.collect();
 
 			let (beginning_content, end_content) = (slices.pop_front().unwrap(), slices.pop_back().unwrap());
-			let message_id = MessageId(Uuid::new_v4());
+			let message_id = FrameIdentifier(Uuid::new_v4());
 
 			packets.push_front(StealthStreamPacket::new_v2(
 				opcode,

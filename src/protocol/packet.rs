@@ -12,7 +12,7 @@ use super::{
 	framing::{FrameFlags, LengthPrefix, MessageContent},
 	HandshakeErrors,
 };
-use crate::protocol::framing::{FrameOpcodes, MessageId};
+use crate::protocol::framing::{FrameIdentifier, FrameOpcodes};
 
 #[derive(Debug, Error)]
 pub enum StealthStreamPacketError {
@@ -30,11 +30,14 @@ pub enum StealthStreamPacketError {
 	InvalidMessageId(#[from] uuid::Error),
 	#[error("message id '{{message_id.0}}' associated with continuation frame missing")]
 	ArbitraryContinuationFrame {
-		message_id: MessageId,
+		message_id: FrameIdentifier,
 		continuation_frame: Vec<u8>,
 	},
 	#[error("message id '{{message_id.0}}' associated with end frame missing")]
-	ArbitraryEndFrame { message_id: MessageId, end_frame: Vec<u8> },
+	ArbitraryEndFrame {
+		message_id: FrameIdentifier,
+		end_frame: Vec<u8>,
+	},
 	#[error("packet missing length prefix")]
 	LengthPrefixMissing,
 	#[error("packet length out of bounds: {0}")]
@@ -54,13 +57,15 @@ pub struct StealthStreamPacket {
 	flag: FrameFlags,
 	#[getter(skip)]
 	length: usize,
-	message_id: Option<MessageId>,
+	message_id: Option<FrameIdentifier>,
 	#[getter(skip)]
 	content: Vec<u8>,
 }
 
 impl StealthStreamPacket {
-	pub fn new_v2(opcode: FrameOpcodes, flag: FrameFlags, message_id: Option<MessageId>, content: Vec<u8>) -> Self {
+	pub fn new_v2(
+		opcode: FrameOpcodes, flag: FrameFlags, message_id: Option<FrameIdentifier>, content: Vec<u8>,
+	) -> Self {
 		Self {
 			opcode,
 			flag,
@@ -84,7 +89,7 @@ impl StealthStreamPacket {
 
 	pub(crate) fn from_encoded(
 		opcode: FrameOpcodes, flag: FrameFlags, length: LengthPrefix, content: MessageContent,
-		message_id: Option<MessageId>,
+		message_id: Option<FrameIdentifier>,
 	) -> Self {
 		let (content, length) = (content.0, length.0 as usize);
 
@@ -140,7 +145,7 @@ impl From<StealthStreamPacket> for Vec<u8> {
 /// the underlying stream.
 #[derive(Debug, Default)]
 pub struct StealthStreamCodec {
-	message_buffers: HashMap<MessageId, MessageContent>,
+	message_buffers: HashMap<FrameIdentifier, MessageContent>,
 }
 
 impl Decoder for StealthStreamCodec {
@@ -184,7 +189,7 @@ impl Decoder for StealthStreamCodec {
 			let message_id = if opcode.is_data_frame()
 				&& matches!(flag, FrameFlags::Beginning | FrameFlags::Continuation | FrameFlags::End)
 			{
-				Some(MessageId::try_from(src)?)
+				Some(FrameIdentifier::try_from(src)?)
 			} else {
 				None
 			};
@@ -300,7 +305,7 @@ mod tests {
 
 	use super::StealthStreamCodec;
 	use crate::protocol::{
-		framing::{FrameFlags, FrameOpcodes, MessageId},
+		framing::{FrameFlags, FrameIdentifier, FrameOpcodes},
 		StealthStreamPacket, StealthStreamPacketError,
 		StealthStreamPacketError::LengthOutOfBounds,
 	};
@@ -391,7 +396,7 @@ mod tests {
 				opcode: FrameOpcodes::Binary,
 				flag: FrameFlags::Beginning,
 				length: content.len(),
-				message_id: Some(MessageId(Uuid::new_v4())),
+				message_id: Some(FrameIdentifier(Uuid::new_v4())),
 				content: content.as_bytes().to_vec(),
 			})
 			.await
@@ -426,7 +431,7 @@ mod tests {
 			flag: FrameFlags::End,
 			length: content.len(),
 			content: content.clone(),
-			message_id: Some(MessageId(Uuid::new_v4())),
+			message_id: Some(FrameIdentifier(Uuid::new_v4())),
 		};
 
 		let arbitrary_continuation_frame = StealthStreamPacket {
@@ -434,7 +439,7 @@ mod tests {
 			flag: FrameFlags::Continuation,
 			length: content.len(),
 			content: content.clone(),
-			message_id: Some(MessageId(Uuid::new_v4())),
+			message_id: Some(FrameIdentifier(Uuid::new_v4())),
 		};
 
 		// Send the packet
