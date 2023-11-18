@@ -142,7 +142,7 @@ impl RawClient {
 	pub async fn send(&self, message: StealthStreamMessage) -> ClientResult<()> {
 		if self.is_connected() {
 			self.raw_socket
-				.write_all(message.to_packet())
+				.write_all(message.to_packet()?)
 				.await
 				.map_err(ClientErrors::from)
 		} else {
@@ -537,10 +537,18 @@ mod tests {
 		let result = client.send(StealthStreamMessage::create_utf8_message(&gen)).await;
 		assert!(result.is_ok());
 		let test = rx.recv().await;
-		assert!(test.is_some_and(|v| v.to_string().contains("Abc123")));
+		assert!(test.is_some_and(|v| v.to_string().contains("aaa")));
+
+		/* Test content overflow */
+		let gen = generate_long_string(1024 * 16);
+		let result = client.send(StealthStreamMessage::create_utf8_message(&gen)).await;
+		println!("result: {:?}", result);
+		assert!(result.is_err_and(|e| matches!(
+			e,
+			ClientErrors::InvalidPacket(StealthStreamPacketError::MessageContentsOverflowed(_))
+		)));
 
 		/* Test Successful Send */
-		println!(); // lag the message
 		let result = client.send(StealthStreamMessage::create_utf8_message("hi")).await;
 		assert!(result.is_ok());
 
@@ -550,7 +558,7 @@ mod tests {
 
 	fn generate_long_string(length_kb: usize) -> String {
 		let length = 1024 * length_kb; // Convert KB to bytes (characters)
-		let repeated_char = "Abc123"; // You can choose any character
+		let repeated_char = "a"; // You can choose any character
 		repeated_char.to_string().repeat(length)
 	}
 }

@@ -299,7 +299,7 @@ mod tests {
 			.await
 			.expect("couldn't connect to server");
 		let handshake = StealthStreamMessage::Handshake(HandshakeData::new(1, None));
-		let mut test = handshake.to_packet();
+		let mut test = handshake.to_packet().unwrap();
 
 		let bytes: Vec<u8> = test.pop().unwrap().into();
 

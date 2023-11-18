@@ -10,7 +10,7 @@ use super::{
 use crate::protocol::{
 	constants::{
 		ERROR_OPCODE, GOODBYE_OPCODE, GRACEFUL, HANDSHAKE_OPCODE, HEARTBEAT_OPCODE, INVALID_HANDSHAKE,
-		MAX_COMPLETE_FRAME_LENGTH, MESSAGE_OPCODE, SERVER_RESTARTING, UNKNOWN,
+		MAX_COMPLETE_FRAME_LENGTH, MAX_MESSAGE_LENGTH, MESSAGE_OPCODE, SERVER_RESTARTING, UNKNOWN,
 	},
 	framing::{FrameFlags, FrameIdentifier, FrameOpcodes},
 	StealthStreamPacket, StealthStreamPacketError,
@@ -33,11 +33,18 @@ pub trait StealthStreamPacketParser {
 	/// If the packet is a control message, it will return a `Vec` of
 	/// [StealthStreamPacket] with a single object, otherwise it will
 	/// break the message contents into multiple frames as required.
-	fn to_packet(&self) -> Vec<StealthStreamPacket> {
+	///
+	/// # Returns
+	/// This method will return a Result<E> if the packet content length is
+	/// greater than the MAX_COMPLETE_FRAME_LENGTH.
+	fn to_packet(&self) -> Result<Vec<StealthStreamPacket>, StealthStreamPacketError> {
 		let (opcode, content_bytes) = self.metadata();
 		let mut packets: VecDeque<StealthStreamPacket> = VecDeque::with_capacity(1); // will need at least one
 
 		// TODO: do we implement max length check?
+		if content_bytes.len() > MAX_MESSAGE_LENGTH as usize {
+			return Err(StealthStreamPacketError::MessageContentsOverflowed(content_bytes.len()));
+		}
 
 		if opcode.is_data_frame() && content_bytes.len() > MAX_COMPLETE_FRAME_LENGTH as usize {
 			let mut slices: VecDeque<Vec<u8>> = content_bytes
@@ -76,7 +83,7 @@ pub trait StealthStreamPacketParser {
 			packets.push_back(StealthStreamPacket::new_v2(opcode, FrameFlags::Complete, None, content_bytes));
 		}
 
-		packets.into()
+		Ok(packets.into())
 	}
 }
 
@@ -114,19 +121,21 @@ impl StealthStreamMessage {
 	///
 	/// This method internally calls the `to_packet` method on the
 	/// [StealthStreamPacketParser] trait and serializes any needed data.
-	pub fn to_packet(&self) -> Vec<StealthStreamPacket> {
-		match self {
-			StealthStreamMessage::Handshake(handshake) => handshake.to_packet(),
+	pub fn to_packet(&self) -> Result<Vec<StealthStreamPacket>, StealthStreamPacketError> {
+		let packet = match self {
+			StealthStreamMessage::Handshake(handshake) => handshake.to_packet()?,
 			StealthStreamMessage::Heartbeat => vec![StealthStreamPacket::new_v2(
 				FrameOpcodes::try_from(HEARTBEAT_OPCODE).unwrap(),
 				FrameFlags::Complete,
 				None,
 				vec![],
 			)],
-			StealthStreamMessage::Message(message) => message.to_packet(),
-			StealthStreamMessage::Goodbye(goodbye) => goodbye.to_packet(),
-			StealthStreamMessage::Error(error) => error.to_packet(),
-		}
+			StealthStreamMessage::Message(message) => message.to_packet()?,
+			StealthStreamMessage::Goodbye(goodbye) => goodbye.to_packet()?,
+			StealthStreamMessage::Error(error) => error.to_packet()?,
+		};
+
+		Ok(packet)
 	}
 
 	/// Utility function to create a [StealthStreamMessage::Goodbye] message

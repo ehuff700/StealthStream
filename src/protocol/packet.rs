@@ -12,7 +12,10 @@ use super::{
 	framing::{FrameFlags, LengthPrefix, MessageContent},
 	HandshakeErrors,
 };
-use crate::protocol::framing::{FrameIdentifier, FrameOpcodes};
+use crate::protocol::{
+	constants::MAX_MESSAGE_LENGTH,
+	framing::{FrameIdentifier, FrameOpcodes},
+};
 
 #[derive(Debug, Error)]
 pub enum StealthStreamPacketError {
@@ -42,6 +45,14 @@ pub enum StealthStreamPacketError {
 	LengthPrefixMissing,
 	#[error("packet length out of bounds: {0}")]
 	LengthOutOfBounds(usize),
+	#[error("message contents out of bounds (size): {size}")]
+	MessageContentsOutOfBounds {
+		size: usize,
+		prev_contents: Vec<u8>,
+		frame_identifier: FrameIdentifier,
+	},
+	#[error("message contents overflowed {MAX_MESSAGE_LENGTH} {0}")]
+	MessageContentsOverflowed(usize),
 	#[error(transparent)]
 	HandshakeError(#[from] HandshakeErrors),
 	#[error("error reading from the underlying stream: {0}")]
@@ -209,38 +220,52 @@ impl Decoder for StealthStreamCodec {
 							return Ok(None);
 						}
 					},
-					FrameFlags::Continuation | FrameFlags::End => match self.message_buffers.get_mut(&message_id) {
-						Some(buffer) => {
+					FrameFlags::Continuation | FrameFlags::End => {
+						if let Some(mut buffer) = self.message_buffers.remove(&message_id) {
+							let potential_length = buffer.content().len() + message.content().len();
+
+							if potential_length > MAX_MESSAGE_LENGTH as usize {
+								{
+									self.message_buffers.remove(&message_id);
+								}
+								return Err(StealthStreamPacketError::MessageContentsOutOfBounds {
+									size: potential_length,
+									prev_contents: buffer.content().to_vec(),
+									frame_identifier: message_id,
+								});
+							}
+
 							buffer.extend_from_slice(message.content());
+
 							if matches!(flag, FrameFlags::End) {
-								let content = self.message_buffers.remove(&message_id).unwrap();
 								return Ok(Some(StealthStreamPacket::from_encoded(
 									opcode,
 									flag,
 									length_prefix,
-									content,
+									buffer,
 									Some(message_id),
 								)));
 							};
+
+							// Insert the modified buffer back into the map if it's not an end frame.
+							self.message_buffers.insert(message_id, buffer);
+
 							if src.len() > MINIMUM_HEADER_LENGTH {
 								continue;
 							} else {
 								return Ok(None);
 							}
-						},
-						None => {
-							if matches!(flag, FrameFlags::Continuation) {
-								return Err(StealthStreamPacketError::ArbitraryContinuationFrame {
-									message_id,
-									continuation_frame: message.content().to_vec(),
-								});
-							} else {
-								return Err(StealthStreamPacketError::ArbitraryEndFrame {
-									message_id,
-									end_frame: message.content().to_vec(),
-								});
-							}
-						},
+						} else if matches!(flag, FrameFlags::Continuation) {
+							return Err(StealthStreamPacketError::ArbitraryContinuationFrame {
+								message_id,
+								continuation_frame: message.content().to_vec(),
+							});
+						} else {
+							return Err(StealthStreamPacketError::ArbitraryEndFrame {
+								message_id,
+								end_frame: message.content().to_vec(),
+							});
+						}
 					},
 					_ => {},
 				};

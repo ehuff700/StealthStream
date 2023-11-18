@@ -2,7 +2,7 @@ use std::string::FromUtf8Error;
 
 use thiserror::Error;
 
-use crate::protocol::{HandshakeErrors, StealthStreamPacketError};
+use crate::protocol::{constants::MAX_MESSAGE_LENGTH, HandshakeErrors, StealthStreamPacketError};
 
 /// Error type for the StealthStream library.
 #[derive(Debug, Error)]
@@ -13,6 +13,8 @@ pub enum Error {
 	InvalidPacket(#[from] StealthStreamPacketError),
 	#[error("Invalid UTF-8: {0:?}")]
 	Utf8Error(#[from] FromUtf8Error),
+	#[error{"message contents overflowed {MAX_MESSAGE_LENGTH} bytes: {0}"}]
+	MessageContentOverflowed(usize),
 	#[error(transparent)]
 	ServerError(#[from] ServerErrors),
 	#[error(transparent)]
@@ -21,7 +23,6 @@ pub enum Error {
 	#[cfg(feature = "tls")]
 	#[error("Couldn't extract private key from file.")]
 	InvalidPrivateKey,
-	
 }
 
 #[derive(Debug, Error)]
