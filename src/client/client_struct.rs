@@ -302,6 +302,13 @@ impl Client {
 		}
 	}
 
+	/// Returns the remote address of the peer this client is connected to, if
+	/// any.
+	pub fn peer_address(&self) -> Option<AddressContext> {
+		let inner = self.inner().ok();
+		inner.map(|inner| inner.peer_address.clone())
+	}
+
 	/// Convenience method used internally by the crate to return the inner
 	/// when we know it's valid.
 	pub fn inner(&self) -> ClientResult<Arc<RawClient>> {
