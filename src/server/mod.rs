@@ -5,7 +5,14 @@ use std::{future::Future, pin::Pin, sync::Arc};
 pub use builder::*;
 pub use server_struct::*;
 
-use crate::{client::RawClient, errors::Error as LibraryError, protocol::StealthStreamMessage};
+use crate::{
+	client::RawClient,
+	errors::Error as LibraryError,
+	protocol::{
+		control_messages::{GoodbyeData, HandshakeData},
+		StealthStreamMessage,
+	},
+};
 
 pub type ServerResult<T> = std::result::Result<T, LibraryError>;
 
@@ -23,3 +30,9 @@ impl<F> MessageCallback for F where
 	F: Fn(StealthStreamMessage, Arc<RawClient>) -> BoxedCallbackFuture + Sync + Send + 'static
 {
 }
+
+pub trait OpenCallback: Fn(HandshakeData, Arc<RawClient>) -> BoxedCallbackFuture + Sync + Send + 'static {}
+impl<F> OpenCallback for F where F: Fn(HandshakeData, Arc<RawClient>) -> BoxedCallbackFuture + Sync + Send + 'static {}
+
+pub trait CloseCallback: Fn(GoodbyeData, Arc<RawClient>) -> BoxedCallbackFuture + Sync + Send + 'static {}
+impl<F> CloseCallback for F where F: Fn(GoodbyeData, Arc<RawClient>) -> BoxedCallbackFuture + Sync + Send + 'static {}

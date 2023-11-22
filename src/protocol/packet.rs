@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use bytes::{Buf, BufMut, BytesMut};
 use derive_getters::Getters;
+use lz4_flex::{block::DecompressError, compress_prepend_size, decompress_size_prepended};
 use thiserror::Error;
 use tokio_util::codec::{Decoder, Encoder};
 #[cfg(test)]
@@ -59,6 +60,8 @@ pub enum StealthStreamPacketError {
 	StreamError(#[from] tokio::io::Error),
 	#[error("the stream has been closed")]
 	StreamClosed,
+	#[error("decompression error: {0}")]
+	DecompressionError(#[from] DecompressError),
 }
 
 #[derive(Debug, Getters, PartialEq)]
@@ -157,6 +160,10 @@ impl From<StealthStreamPacket> for Vec<u8> {
 #[derive(Debug, Default)]
 pub struct StealthStreamCodec {
 	message_buffers: HashMap<FrameIdentifier, MessageContent>,
+	compression: bool,
+}
+impl StealthStreamCodec {
+	pub fn set_compression(&mut self, value: bool) { self.compression = value }
 }
 
 impl Decoder for StealthStreamCodec {
@@ -167,6 +174,14 @@ impl Decoder for StealthStreamCodec {
 		loop {
 			if src.len() < MINIMUM_HEADER_LENGTH {
 				return Ok(None);
+			}
+
+			if self.compression {
+				let uncompressed = decompress_size_prepended(src)?;
+				#[cfg(test)]
+				debug!("did i get here");
+				src.clear();
+				src.extend_from_slice(&uncompressed);
 			}
 
 			#[cfg(test)]
@@ -320,6 +335,13 @@ impl Encoder<StealthStreamPacket> for StealthStreamCodec {
 		}
 
 		dst.extend_from_slice(&item.content);
+
+		if self.compression {
+			let compressed_bytes = compress_prepend_size(dst);
+			let compressed = BytesMut::from(compressed_bytes.as_slice());
+			dst.clear();
+			dst.extend_from_slice(&compressed);
+		}
 
 		Ok(())
 	}

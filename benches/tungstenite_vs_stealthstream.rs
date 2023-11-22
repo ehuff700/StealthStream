@@ -29,7 +29,7 @@ async fn setup_stealthstream_server() -> Arc<Server> {
 	let random_port: u16 = rng.gen_range(1000..=65535);
 	let server = ServerBuilder::default()
 		.port(random_port)
-		.with_event_handler(|msg, client| {
+		.onmessage(|msg, client| {
 			pin_callback!({
 				let _ = client.send(msg).await;
 			})

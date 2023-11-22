@@ -91,6 +91,20 @@ impl StealthStream {
 		Ok(())
 	}
 
+	/// Sets the compression for the stream.
+	pub async fn set_compression(&self, enable: bool) {
+		{
+			let mut writer = self.writer.lock().await;
+			let writer_codec = writer.encoder_mut();
+			writer_codec.set_compression(enable);
+		}
+		{
+			let mut reader = self.reader.lock().await;
+			let reader_codec = reader.decoder_mut();
+			reader_codec.set_compression(enable);
+		}
+	}
+
 	/* Getters */
 	#[cfg(not(feature = "tls"))]
 	pub fn writer(&self) -> &Mutex<FramedWrite<OwnedWriteHalf, StealthStreamCodec>> { &self.writer }

@@ -36,7 +36,3 @@ pub const UNKNOWN: u8 = 0;
 /* Handshake Constants */
 /// The list of supported versions for the Stealth Stream Protocol.
 pub const SUPPORTED_VERSIONS: [u8; 1] = [1];
-/// Default handshake length for the Stealth Stream Protocol.
-pub const DEFAULT_HANDSHAKE_LENGTH: usize = 1;
-/// Handshake length for the Stealth Stream Protocol with a session ID.
-pub const HANDSHAKE_LENGTH_WITH_SESSION_ID: usize = DEFAULT_HANDSHAKE_LENGTH + 16;

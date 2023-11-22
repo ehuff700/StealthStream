@@ -1,0 +1,34 @@
+{
+    "configurations": [
+        {
+            "type": "cargo",
+            "name": "Test Configuration",
+            "cargoArgs": ["test"],
+            "cargoExtraArgs": ["--lib"],
+        },
+        
+        {
+            "type": "cargo",
+            "name": "Debug Configuration",
+            "cargoArgs": ["run"],
+            "cargoExtraArgs": ["--release"],
+        },
+        {
+            "type": "cargo",
+            "name": "Server Configuration",
+            "dependsOn": ["Test Configuration"],
+            "cargoArgs": ["run", "--release", "--example"],
+            "cargoExtraArgs": ["server"],
+        },
+        
+        {
+            "type": "cargo",
+            "allowParallelRun": true,
+            "name": "Client Configuration",
+            //"dependsOn": ["Server Configuration"],
+            "cargoArgs": ["run", "--release", "--example", "client"],
+        },
+        
+        
+    ]
+}

@@ -26,8 +26,13 @@ pub struct ClientBuilder {
 	/// the message will be used.
 	pub(crate) event_handler: Option<Arc<dyn MessageCallback>>,
 
-	/// Simple boolean to indicate whether or not the client should skip certificate validation.
-	/// This should only be used for testing purposes **AND IS NOT SAFE** for production use.
+	/// Whether or not the client should attempt to compress the stream
+	///
+	/// This will use lz4 internally to compress the stream if true.
+	pub(crate) should_compress: bool,
+	/// Simple boolean to indicate whether or not the client should skip
+	/// certificate validation. This should only be used for testing purposes
+	/// **AND IS NOT SAFE** for production use.
 	#[cfg(feature = "tls")]
 	pub(crate) skip_certificate_validation: bool,
 }
@@ -39,6 +44,7 @@ impl ClientBuilder {
 			reconnect_interval: None, // TODO: implement exponential backoff
 			reconnect_attempts: 10,
 			event_handler: None,
+			should_compress: false,
 			#[cfg(feature = "tls")]
 			skip_certificate_validation: false,
 		}
@@ -69,9 +75,17 @@ impl ClientBuilder {
 		self
 	}
 
+	/// Determines whether or not the client should attempt to compress the
+	/// stream using the LZ4 algorithm.
+	pub fn should_compress(mut self, should_compress: bool) -> Self {
+		self.should_compress = should_compress;
+		self
+	}
+
 	/// Determines whether or not the client should skip certificate validation.
 	///
-	/// Skipping certificate validation should only be used for testing purposes **AND IS NOT SAFE** for production use.
+	/// Skipping certificate validation should only be used for testing purposes
+	/// **AND IS NOT SAFE** for production use.
 	#[cfg(feature = "tls")]
 	pub fn skip_certificate_validation(mut self, value: bool) -> Self {
 		self.skip_certificate_validation = value;
@@ -79,9 +93,7 @@ impl ClientBuilder {
 	}
 
 	// TODO: implement on close/error? Or leave that up to the implementation?
-	pub fn build(self) -> Client {
-		self.into()
-	}
+	pub fn build(self) -> Client { self.into() }
 
 	/// Default event handler which simply logs the message.
 	pub(crate) fn default_event_handler() -> Arc<dyn MessageCallback> {
@@ -95,7 +107,5 @@ impl ClientBuilder {
 }
 
 impl Default for ClientBuilder {
-	fn default() -> Self {
-		Self::new()
-	}
+	fn default() -> Self { Self::new() }
 }

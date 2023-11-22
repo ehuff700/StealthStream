@@ -1,4 +1,4 @@
-use std::fmt::Display;
+use std::{fmt::Display, io::Cursor};
 
 use async_trait::async_trait;
 use derive_getters::Getters;
@@ -7,22 +7,23 @@ use uuid::Uuid;
 
 use super::{GoodbyeCodes, StealthStreamPacketParser};
 use crate::protocol::{
-	constants::{ERROR_OPCODE, GOODBYE_OPCODE, HANDSHAKE_OPCODE},
+	constants::{ERROR_OPCODE, GOODBYE_OPCODE, HANDSHAKE_OPCODE, SUPPORTED_VERSIONS},
 	framing::FrameOpcodes,
-	Handshake, StealthStreamPacket, StealthStreamPacketError,
+	HandshakeErrors, StealthStreamPacket, StealthStreamPacketError,
 };
 
 #[derive(Debug, PartialEq, Getters)]
 pub struct HandshakeData {
-	version: u8,
-	session_id: Option<Uuid>,
+	pub(crate) version: u8,
+	pub(crate) should_compress: bool,
+	pub(crate) session_id: Option<Uuid>,
 }
 
 #[async_trait]
 impl StealthStreamPacketParser for HandshakeData {
 	fn metadata(&self) -> (FrameOpcodes, Vec<u8>) {
 		let opcode = FrameOpcodes::try_from(HANDSHAKE_OPCODE).unwrap();
-		let mut handshake = vec![self.version];
+		let mut handshake = vec![self.version, self.should_compress as u8];
 		if let Some(session_id) = self.session_id.as_ref() {
 			handshake.extend_from_slice(session_id.as_bytes());
 		}
@@ -31,9 +32,40 @@ impl StealthStreamPacketParser for HandshakeData {
 	}
 
 	async fn from_packet(packet: &StealthStreamPacket) -> Result<Self, StealthStreamPacketError> {
-		let message_buffer = packet.content();
-		let handshake = Handshake::parse_handshake(message_buffer).await?;
-		Ok(handshake.into())
+		let mut message_buffer = packet.content();
+		let mut reader = Cursor::new(message_buffer);
+		let version = reader.read_u8().await?;
+
+		if !SUPPORTED_VERSIONS.contains(&version) {
+			return Err(HandshakeErrors::UnsupportedVersion(version))?;
+		}
+
+		let should_compress = {
+			let u8 = reader.read_u8().await?;
+			if u8 > 1 {
+				return Err(HandshakeErrors::ArbitraryBytes)?;
+			}
+			u8 != 0
+		};
+
+		let session_id = if message_buffer.len() > 2 {
+			let slice = message_buffer.read_i128().await?.to_be_bytes();
+
+			let session_id = Uuid::from_slice(&slice).map_err(HandshakeErrors::from)?;
+
+			if session_id.is_nil() || session_id.get_version_num() != 4 {
+				return Err(HandshakeErrors::InvalidSessionId(session_id))?;
+			}
+			Some(session_id)
+		} else {
+			None
+		};
+
+		Ok(Self {
+			version,
+			should_compress,
+			session_id,
+		})
 	}
 }
 
@@ -131,7 +163,13 @@ impl Display for ErrorData {
 
 /* New Implementations */
 impl HandshakeData {
-	pub fn new(version: u8, session_id: Option<Uuid>) -> Self { Self { version, session_id } }
+	pub fn new(version: u8, should_compress: bool, session_id: Option<Uuid>) -> Self {
+		Self {
+			version,
+			should_compress,
+			session_id,
+		}
+	}
 }
 
 impl GoodbyeData {

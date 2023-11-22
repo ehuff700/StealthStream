@@ -7,10 +7,12 @@ use tokio::{net::TcpListener, signal, sync::mpsc};
 use tokio_rustls::TlsAcceptor;
 use tracing::{debug, error, info};
 
-use super::{MessageCallback, ServerResult};
+use super::{CloseCallback, MessageCallback, OpenCallback, ServerResult};
 use crate::{
 	client::RawClient,
-	protocol::{constants::INVALID_HANDSHAKE, Handshake, StealthStreamMessage, StealthStreamPacketError},
+	protocol::{
+		constants::INVALID_HANDSHAKE, control_messages::HandshakeData, StealthStreamMessage, StealthStreamPacketError,
+	},
 };
 
 pub struct Server {
@@ -18,7 +20,9 @@ pub struct Server {
 	address: SocketAddr,
 	poke_delay: u64,
 	handshake_timeout: u64,
-	event_handler: Arc<dyn MessageCallback>,
+	on_open: Arc<dyn OpenCallback>,
+	on_message: Arc<dyn MessageCallback>,
+	on_close: Arc<dyn CloseCallback>,
 	#[cfg(feature = "tls")]
 	tls_config: Arc<ServerConfig>,
 }
@@ -26,7 +30,8 @@ impl Server {
 	/// Used internally by the ServerBuilder to create a new [Server] instance.
 	pub(super) fn new(
 		listener: TcpListener, address: SocketAddr, poke_delay: u64, handshake_timeout: u64,
-		event_handler: Arc<dyn MessageCallback>, #[cfg(feature = "tls")] server_config: Option<ServerConfig>,
+		on_open: Arc<dyn OpenCallback>, on_message: Arc<dyn MessageCallback>, on_close: Arc<dyn CloseCallback>,
+		#[cfg(feature = "tls")] server_config: Option<ServerConfig>,
 	) -> Self {
 		#[cfg(feature = "signals")] // TODO: implement this properly or not at all?
 		tokio::task::spawn({
@@ -42,7 +47,9 @@ impl Server {
 			address,
 			poke_delay,
 			handshake_timeout,
-			event_handler,
+			on_open,
+			on_message,
+			on_close,
 			#[cfg(feature = "tls")]
 			tls_config: Arc::new(server_config.unwrap()),
 		}
@@ -88,19 +95,25 @@ impl Server {
 	/// creating a poke task to keep the connection alive.
 	async fn handle_client(&self, client: Arc<RawClient>) {
 		let timeout = self.handshake_timeout;
-		let handshake_result = Handshake::start_server_handshake(&client, timeout).await;
+		let handshake_result = HandshakeData::start_server_handshake(&client, timeout).await;
 
-		if let Err(e) = handshake_result {
-			error!("Error handshaking for client: {:?}", e);
-			let _ = client.disconnect_with_reason(INVALID_HANDSHAKE, &e.to_string()).await;
-			drop(client);
-		} else {
-			let delay = self.poke_delay;
-			tokio::task::spawn(Self::poke_task(client.clone(), delay));
+		match handshake_result {
+			Ok(data) => {
+				let open_callback = self.on_open.clone();
+				tokio::task::spawn(open_callback(data, client.clone()));
 
-			let (write_tx, write_rx) = mpsc::channel::<StealthStreamMessage>(100);
-			Self::spawn_read_task(&client, write_tx);
-			self.spawn_write_task(&client, write_rx);
+				let delay = self.poke_delay;
+				tokio::task::spawn(Self::poke_task(client.clone(), delay));
+
+				let (write_tx, write_rx) = mpsc::channel::<StealthStreamMessage>(100);
+				Self::spawn_read_task(&client, write_tx);
+				self.spawn_write_task(&client, write_rx);
+			},
+			Err(e) => {
+				error!("Error handshaking for client: {:?}", e);
+				let _ = client.disconnect_with_reason(INVALID_HANDSHAKE, &e.to_string()).await;
+				drop(client);
+			},
 		}
 	}
 
@@ -166,13 +179,21 @@ impl Server {
 	fn spawn_write_task(&self, client: &Arc<RawClient>, mut rx: mpsc::Receiver<StealthStreamMessage>) {
 		tokio::task::spawn({
 			let write_client = client.clone();
-			let callback = self.event_handler.clone();
+			let close_callback = self.on_close.clone();
+			let normal_callback = self.on_message.clone();
 
 			async move {
 				while let Some(message) = rx.recv().await {
-					// The callback returns a future which we *must* await
-					// otherwise the code inside the callback will effectively be dead.
-					callback(message, write_client.clone()).await;
+					tokio::task::spawn({
+						let (close_callback, normal_callback) = (close_callback.clone(), normal_callback.clone());
+						let write_client_cloned = write_client.clone();
+						async move {
+							match message {
+								StealthStreamMessage::Goodbye(data) => close_callback(data, write_client_cloned).await,
+								_ => normal_callback(message, write_client_cloned).await,
+							}
+						}
+					});
 				}
 			}
 		});
@@ -258,7 +279,7 @@ mod tests {
 			.key_file_path("src/test_key.pem");
 
 		let server = if let Some(callback) = callback {
-			base_server.with_event_handler(callback)
+			base_server.onmessage(callback)
 		} else {
 			base_server
 		};
@@ -298,7 +319,7 @@ mod tests {
 		let mut raw_stream = TcpStream::connect(server.address())
 			.await
 			.expect("couldn't connect to server");
-		let handshake = StealthStreamMessage::Handshake(HandshakeData::new(1, None));
+		let handshake = StealthStreamMessage::Handshake(HandshakeData::new(1, false, None));
 		let mut test = handshake.to_packet().unwrap();
 
 		let bytes: Vec<u8> = test.pop().unwrap().into();

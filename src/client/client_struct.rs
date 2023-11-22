@@ -24,7 +24,8 @@ use crate::protocol::tls::{CertVerifier, ServerTlsStream};
 use crate::{
 	errors::ClientErrors,
 	protocol::{
-		constants::GRACEFUL, GoodbyeCodes, Handshake, StealthStream, StealthStreamMessage, StealthStreamPacketError,
+		constants::GRACEFUL, control_messages::HandshakeData, GoodbyeCodes, StealthStream, StealthStreamMessage,
+		StealthStreamPacketError,
 	},
 	server::MessageCallback,
 	StealthStreamResult,
@@ -207,6 +208,8 @@ pub struct Client {
 	/// Custom event handler defined by the client for use in recieving messages
 	/// from the server.
 	event_handler: Arc<dyn MessageCallback>,
+	/// Whether or not the client should compress the stream using LZ4.
+	should_compress: bool,
 	/// Whether or not the client should skip certificate validation.
 	#[cfg(feature = "tls")]
 	skip_certificate_validation: bool,
@@ -229,7 +232,7 @@ impl Client {
 
 		self.inner = Some(Arc::new(inner));
 
-		Handshake::start_client_handshake(self).await?;
+		HandshakeData::start_client_handshake(self, self.should_compress).await?;
 
 		// Setup a ctrl + c listener to gracefully close the connection.
 		#[cfg(feature = "signals")]
@@ -326,6 +329,7 @@ impl From<ClientBuilder> for Client {
 			should_reconnect: value.should_reconnect,
 			reconnect_interval: value.reconnect_interval,
 			reconnect_attempts: value.reconnect_attempts,
+			should_compress: value.should_compress,
 			event_handler: value
 				.event_handler
 				.unwrap_or_else(|| ClientBuilder::default_event_handler()),
@@ -406,9 +410,7 @@ mod tests {
 		let mut rng = rand::thread_rng();
 		let random_number: u16 = rng.gen_range(1000..10000);
 		#[cfg(not(feature = "tls"))]
-		let server = ServerBuilder::default()
-			.port(random_number)
-			.with_event_handler(callback);
+		let server = ServerBuilder::default().port(random_number).onmessage(callback);
 		#[cfg(feature = "tls")]
 		let server = ServerBuilder::default()
 			.cert_file_path("src/test_cert.pem")

@@ -18,10 +18,17 @@ use tokio::net::TcpListener;
 use tokio_rustls::rustls::ServerConfig;
 use tracing::debug;
 
-use super::{server_struct::Server, MessageCallback, ServerResult};
+use super::{server_struct::Server, CloseCallback, MessageCallback, OpenCallback, ServerResult};
 #[cfg(feature = "tls")]
 use crate::errors::Error;
-use crate::{client::RawClient, pin_callback, protocol::StealthStreamMessage};
+use crate::{
+	client::RawClient,
+	pin_callback,
+	protocol::{
+		control_messages::{GoodbyeData, HandshakeData},
+		StealthStreamMessage,
+	},
+};
 
 /// Utility Struct to build a [Server] as needed
 pub struct ServerBuilder {
@@ -36,7 +43,11 @@ pub struct ServerBuilder {
 	handshake_timeout: u64,
 	/// The event handler that will be invoked when a [StealthStreamMessage] is
 	/// received
-	event_handler: Option<Arc<dyn MessageCallback>>,
+	on_message: Option<Arc<dyn MessageCallback>>,
+	/// The event handler that will be invoked when a connection is opened.
+	on_open: Option<Arc<dyn OpenCallback>>,
+	// The event handler that will be invoked when a connection is closed.
+	on_close: Option<Arc<dyn CloseCallback>>,
 	#[cfg(feature = "tls")]
 	/// The path to the TLS certificate.
 	cert_file_path: Option<PathBuf>,
@@ -52,7 +63,9 @@ impl ServerBuilder {
 			port: 7007,
 			poke_delay: 5000,
 			handshake_timeout: 2000,
-			event_handler: None,
+			on_message: None,
+			on_close: None,
+			on_open: None,
 			#[cfg(feature = "tls")]
 			cert_file_path: None,
 			#[cfg(feature = "tls")]
@@ -82,14 +95,31 @@ impl ServerBuilder {
 		self
 	}
 
+	/// Sets the accepted delay (in ms) in which a client must negotiate a
+	/// successful handshake before the server closes the connection.
 	pub fn set_handshake_timeout(mut self, handshake_timeout: u64) -> Self {
 		self.handshake_timeout = handshake_timeout;
 		self
 	}
 
-	/// Uses the provided event handler to handle [StealthStreamMessage]s.
-	pub fn with_event_handler(mut self, event_handler: impl MessageCallback) -> Self {
-		self.event_handler = Some(Arc::new(event_handler));
+	/// Sets the event handler for all incoming [StealthStreamMessage]s, with
+	/// the exception of handshakes (those go to open) and goodbyes (those go to
+	/// close)
+	pub fn onmessage(mut self, event_handler: impl MessageCallback) -> Self {
+		self.on_message = Some(Arc::new(event_handler));
+		self
+	}
+
+	/// Sets the event handler for all goodbye messages.
+	pub fn onclose(mut self, event_handler: impl CloseCallback) -> Self {
+		self.on_close = Some(Arc::new(event_handler));
+		self
+	}
+
+	/// Sets the event handler for all incoming handshakes (e.g new
+	/// connections.)
+	pub fn onopen(mut self, event_handler: impl OpenCallback) -> Self {
+		self.on_open = Some(Arc::new(event_handler));
 		self
 	}
 
@@ -112,7 +142,9 @@ impl ServerBuilder {
 	pub async fn build(self) -> ServerResult<Server> {
 		let address = SocketAddr::new(self.address, self.port);
 		let listener = TcpListener::bind(address).await?;
-		let event_handler = self.event_handler.unwrap_or_else(|| Self::default_event_handler());
+		let on_message = self.on_message.unwrap_or_else(|| Self::default_message_handler());
+		let on_close = self.on_close.unwrap_or_else(|| Self::default_close_handler());
+		let on_open = self.on_open.unwrap_or_else(|| Self::default_open_handler());
 
 		#[cfg(feature = "tls")]
 		{
@@ -143,7 +175,9 @@ impl ServerBuilder {
 				SocketAddr::new(self.address, self.port),
 				self.poke_delay,
 				self.handshake_timeout,
-				event_handler,
+				on_open,
+				on_message,
+				on_close,
 				Some(config),
 			))
 		}
@@ -154,17 +188,38 @@ impl ServerBuilder {
 				SocketAddr::new(self.address, self.port),
 				self.poke_delay,
 				self.handshake_timeout,
-				event_handler,
+				on_open,
+				on_message,
+				on_close,
 			))
 		}
 	}
 
-	fn default_event_handler() -> Arc<dyn MessageCallback> {
+	fn default_message_handler() -> Arc<dyn MessageCallback> {
 		let handler = |message: StealthStreamMessage, _: Arc<RawClient>| {
 			pin_callback!({
-				debug!("Received message: {:?}", message);
+				debug!(target: "default_message_handler", "Received message: {:?}", message);
 			})
 		};
+		Arc::new(handler)
+	}
+
+	fn default_close_handler() -> Arc<dyn CloseCallback> {
+		let handler = |data: GoodbyeData, _: Arc<RawClient>| {
+			pin_callback!({
+				debug!(target: "default_close_handler", "Client closed connection: {:?}", data);
+			})
+		};
+		Arc::new(handler)
+	}
+
+	fn default_open_handler() -> Arc<dyn OpenCallback> {
+		let handler = |_: HandshakeData, client: Arc<RawClient>| {
+			pin_callback!({
+				debug!(target: "default_open_handler", "Client connected from {:?}", client.peer_address());
+			})
+		};
+
 		Arc::new(handler)
 	}
 }
