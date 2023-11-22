@@ -252,30 +252,24 @@ impl Client {
 	/// Sends a message to/from the client to the stream.
 	pub async fn send(&self, message: StealthStreamMessage) -> ClientResult<()> { self.inner()?.send(message).await }
 
-	/// Spawns a new tokio task which listens for incoming messages.
+	/// Spawns a blocking loop which listens for incoming messages from the
+	/// server.
 	///
 	/// While the client is connected, it will recieve messagees from the server
 	/// and call the event handler of this client with the message.
 	pub async fn listen(&self) -> StealthStreamResult<()> {
 		let inner = self.inner()?;
-		tokio::task::spawn({
-			let cloned = inner.clone();
-			let callback = self.event_handler.clone();
-			async move {
-				while cloned.is_connected() {
-					while let Some(packet) = cloned.receive().await {
-						match packet {
-							Ok(message) => {
-								callback(message, cloned.clone()).await;
-							},
-							Err(e) => return Err(e), // TODO: handle errors on the client side
-						}
-					}
+		let callback = &self.event_handler;
+		while inner.is_connected() {
+			while let Some(packet) = inner.receive().await {
+				match packet {
+					Ok(message) => {
+						callback(message, inner.clone()).await;
+					},
+					Err(e) => return Err(e)?, // TODO: handle errors on the client side
 				}
-				Ok(())
 			}
-		});
-
+		}
 		Ok(())
 	}
 
