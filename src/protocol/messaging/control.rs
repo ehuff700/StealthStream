@@ -209,6 +209,20 @@ impl Display for ErrorData {
 }
 
 /* New Implementations */
+impl AuthData {
+	/// Note: For security purposes, the password should be hashed before being
+	/// passed to this function. The hash can then be verified on the server
+	/// side via the auth callback.
+	pub fn new(username: impl Into<String>, hashed_password: impl Into<String>) -> Self {
+		let (username, hashed_password) = (username.into(), hashed_password.into());
+
+		Self {
+			username,
+			hashed_password,
+		}
+	}
+}
+
 impl HandshakeData {
 	pub fn new(version: u8, should_compress: bool, namespace: &str, auth: Option<AuthData>) -> Self {
 		let namespace = namespace.to_string();

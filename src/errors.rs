@@ -35,6 +35,8 @@ pub enum ClientErrors {
 	InvalidPacket(#[from] StealthStreamPacketError),
 	#[error("Client Error Occurred: {0}")]
 	MiscError(#[from] anyhow::Error),
+	#[error("error deserializing from bytes: {0:?}")]
+	DeserializeError(#[from] rmp_serde::decode::Error),
 }
 
 #[derive(Debug, Error)]

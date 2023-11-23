@@ -23,7 +23,7 @@ pub type BoxedCallbackFuture = Pin<Box<dyn Future<Output = ()> + Send + 'static>
 pub type BoxedBoolFuture = Pin<Box<dyn Future<Output = Result<bool, Box<dyn std::error::Error>>> + Send + 'static>>;
 
 /// This trait is used by the [Server] and [Client] to handle incoming messages.
-pub trait MessageCallback: // TODO: move this somewhere else
+pub trait MessageCallback:
 	Fn(StealthStreamMessage, Arc<RawClient>) -> BoxedCallbackFuture + Sync + Send + 'static
 {
 }

@@ -36,6 +36,8 @@ tokio-rustls = { version = "0.24.1", optional = true, features = [
 rustls-pemfile = { version = "1.0.4", optional = true }
 rustls = { version = "0.21.8", default-features = false, optional = true }
 lz4_flex = "0.11.1"
+rmp-serde = "1.1.2"
+serde = { version = "1.0.193", features = ["derive"] }
 
 [dependencies.tokio]
 version = "*"
@@ -52,7 +54,7 @@ features = [
 
 [dependencies.uuid]
 version = "1.5.0"
-features = ["v4", "fast-rng"]
+features = ["v4", "fast-rng", "serde"]
 
 [[example]]
 name = "client"

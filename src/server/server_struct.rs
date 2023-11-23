@@ -344,7 +344,7 @@ mod tests {
 		assert!(raw_stream_result.is_err(), "Somehow recieved a successful message?");
 
 		/* Test Successful Recieve */
-		let packet = StealthStreamMessage::Message(MessageData::new(b"test", false));
+		let packet = StealthStreamMessage::Message(MessageData::new(b"test", false, false));
 		c.send(packet).await.expect("error sending message");
 
 		let received = rx.recv().await;
