@@ -13,3 +13,10 @@ macro_rules! pin_callback {
 		Box::pin(async move { $callback }) as $crate::server::BoxedCallbackFuture
 	};
 }
+
+#[macro_export]
+macro_rules! pin_auth_callback {
+	($callback:block) => {
+		Box::pin(async move { $callback }) as $crate::server::BoxedBoolFuture
+	};
+}

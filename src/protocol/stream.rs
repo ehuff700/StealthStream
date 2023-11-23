@@ -76,7 +76,7 @@ impl StealthStream {
 
 		if let Some(result) = next_result {
 			match result {
-				Ok(ref packet) => Some(StealthStreamMessage::from_packet(packet).await),
+				Ok(packet) => Some(StealthStreamMessage::from_packet(packet).await),
 				Err(e) => Some(Err(e)),
 			}
 		} else {
