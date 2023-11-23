@@ -1,13 +1,10 @@
 use std::fmt::Display;
 
-use async_trait::async_trait;
+use bytes::{Buf, Bytes};
 use derive_getters::Getters;
-use tokio::io::AsyncReadExt;
 
 use super::StealthStreamPacketParser;
-use crate::protocol::{
-	constants::MESSAGE_OPCODE, framing::FrameOpcodes, StealthStreamPacket, StealthStreamPacketError,
-};
+use crate::protocol::{framing::FrameOpcodes, StealthStreamPacket, StealthStreamPacketError};
 
 #[derive(Debug, PartialEq, Getters)]
 pub struct MessageData {
@@ -23,23 +20,19 @@ impl MessageData {
 		}
 	}
 }
-#[async_trait]
+
 impl StealthStreamPacketParser for MessageData {
 	fn metadata(&self) -> (FrameOpcodes, Vec<u8>) {
-		let opcode = FrameOpcodes::try_from(MESSAGE_OPCODE).unwrap();
 		let bytes = &self.content;
 		let mut array = Vec::with_capacity(self.content.len());
 		array.push(self.is_utf_8 as u8);
 		array.extend_from_slice(bytes);
-		(opcode, array)
+		(FrameOpcodes::Binary, array)
 	}
 
-	async fn from_packet(packet: &StealthStreamPacket) -> Result<Self, StealthStreamPacketError> {
-		let mut message_buffer = packet.content();
-		let mut is_utf_8 = [0u8; 1];
-		message_buffer.read_exact(&mut is_utf_8).await?;
-
-		let is_utf_8 = is_utf_8[0] == 1;
+	fn from_packet(packet: StealthStreamPacket) -> Result<Self, StealthStreamPacketError> {
+		let mut message_buffer = Bytes::from(packet.into_content());
+		let is_utf_8 = message_buffer.get_u8() == 1;
 
 		Ok(Self {
 			is_utf_8,

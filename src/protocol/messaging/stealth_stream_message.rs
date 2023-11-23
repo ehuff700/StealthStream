@@ -1,91 +1,18 @@
-use std::{collections::VecDeque, fmt::Display};
-
-use async_trait::async_trait;
-use uuid::Uuid;
+use std::fmt::Display;
 
 use super::{
-	control_messages::{ErrorData, GoodbyeData, HandshakeData},
-	data_messages::MessageData,
+	control::{ErrorData, GoodbyeData, HandshakeData},
+	data::MessageData,
+	StealthStreamPacketParser,
 };
 use crate::protocol::{
 	constants::{
-		ERROR_OPCODE, GOODBYE_OPCODE, GRACEFUL, HANDSHAKE_OPCODE, HEARTBEAT_OPCODE, INVALID_HANDSHAKE,
-		MAX_COMPLETE_FRAME_LENGTH, MAX_MESSAGE_LENGTH, MESSAGE_OPCODE, SERVER_RESTARTING, UNKNOWN,
+		ERROR_OPCODE, GOODBYE_OPCODE, GRACEFUL, HANDSHAKE_OPCODE, HEARTBEAT_OPCODE, INVALID_HANDSHAKE, MESSAGE_OPCODE,
+		SERVER_RESTARTING, UNKNOWN,
 	},
-	framing::{FrameFlags, FrameIdentifier, FrameOpcodes},
+	framing::{FrameFlags, FrameOpcodes},
 	StealthStreamPacket, StealthStreamPacketError,
 };
-
-#[async_trait]
-pub trait StealthStreamPacketParser {
-	/// Returns a tuple containing the opcode and serialized content for the
-	/// packet
-	fn metadata(&self) -> (FrameOpcodes, Vec<u8>);
-
-	/// Parses a packet and returns the corresponding data object.
-	async fn from_packet(packet: &StealthStreamPacket) -> Result<Self, StealthStreamPacketError>
-	where
-		Self: Sized;
-
-	/// Calls the metadata method to get the opcode and serialized content
-	/// bytes, and returns a `Vec` of [StealthStreamPacket].
-	///
-	/// If the packet is a control message, it will return a `Vec` of
-	/// [StealthStreamPacket] with a single object, otherwise it will
-	/// break the message contents into multiple frames as required.
-	///
-	/// # Returns
-	/// This method will return a Result<E> if the packet content length is
-	/// greater than the MAX_COMPLETE_FRAME_LENGTH.
-	fn to_packet(&self) -> Result<Vec<StealthStreamPacket>, StealthStreamPacketError> {
-		let (opcode, content_bytes) = self.metadata();
-		let mut packets: VecDeque<StealthStreamPacket> = VecDeque::with_capacity(1); // will need at least one
-
-		// TODO: do we implement max length check?
-		if content_bytes.len() > MAX_MESSAGE_LENGTH as usize {
-			return Err(StealthStreamPacketError::MessageContentsOverflowed(content_bytes.len()));
-		}
-
-		if opcode.is_data_frame() && content_bytes.len() > MAX_COMPLETE_FRAME_LENGTH as usize {
-			let mut slices: VecDeque<Vec<u8>> = content_bytes
-				.chunks(MAX_COMPLETE_FRAME_LENGTH as usize)
-				.map(|chunk| chunk.to_vec())
-				.collect();
-
-			let (beginning_content, end_content) = (slices.pop_front().unwrap(), slices.pop_back().unwrap());
-			let message_id = FrameIdentifier(Uuid::new_v4());
-
-			packets.push_front(StealthStreamPacket::new_v2(
-				opcode,
-				FrameFlags::Beginning,
-				Some(message_id),
-				beginning_content,
-			));
-
-			if !slices.is_empty() {
-				for slice in slices {
-					packets.push_back(StealthStreamPacket::new_v2(
-						opcode,
-						FrameFlags::Continuation,
-						Some(message_id),
-						slice,
-					));
-				}
-			}
-
-			packets.push_back(StealthStreamPacket::new_v2(
-				opcode,
-				FrameFlags::End,
-				Some(message_id),
-				end_content,
-			));
-		} else {
-			packets.push_back(StealthStreamPacket::new_v2(opcode, FrameFlags::Complete, None, content_bytes));
-		}
-
-		Ok(packets.into())
-	}
-}
 
 #[derive(Debug, PartialEq)]
 /// An overarching enum repsenting the different types of messages that can be
@@ -100,17 +27,13 @@ pub enum StealthStreamMessage {
 
 impl StealthStreamMessage {
 	/// Converts a `StealthStreamPacket` into a `StealthStreamMessage`
-	///
-	/// This method will match on the packet opcode and deserialize any needed
-	/// data by calling the `from_packet` method on the
-	/// [StealthStreamPacketParser] trait.
-	pub async fn from_packet(packet: &StealthStreamPacket) -> Result<Self, StealthStreamPacketError> {
+	pub async fn from_packet(packet: StealthStreamPacket) -> Result<Self, StealthStreamPacketError> {
 		let data = match packet.opcode() {
-			HANDSHAKE_OPCODE => StealthStreamMessage::Handshake(HandshakeData::from_packet(packet).await?),
+			HANDSHAKE_OPCODE => StealthStreamMessage::Handshake(HandshakeData::from_packet(packet)?),
 			HEARTBEAT_OPCODE => StealthStreamMessage::Heartbeat,
-			MESSAGE_OPCODE => StealthStreamMessage::Message(MessageData::from_packet(packet).await?),
-			GOODBYE_OPCODE => StealthStreamMessage::Goodbye(GoodbyeData::from_packet(packet).await?),
-			ERROR_OPCODE => StealthStreamMessage::Error(ErrorData::from_packet(packet).await?),
+			MESSAGE_OPCODE => StealthStreamMessage::Message(MessageData::from_packet(packet)?),
+			GOODBYE_OPCODE => StealthStreamMessage::Goodbye(GoodbyeData::from_packet(packet)?),
+			ERROR_OPCODE => StealthStreamMessage::Error(ErrorData::from_packet(packet)?),
 			_ => unreachable!(),
 		};
 

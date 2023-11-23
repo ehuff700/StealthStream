@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, process, sync::Arc};
+use std::{collections::HashMap, net::SocketAddr, process, sync::Arc};
 
 #[cfg(feature = "tls")]
 use rustls::ServerConfig;
@@ -7,12 +7,10 @@ use tokio::{net::TcpListener, signal, sync::mpsc};
 use tokio_rustls::TlsAcceptor;
 use tracing::{debug, error, info};
 
-use super::{CloseCallback, MessageCallback, OpenCallback, ServerResult};
+use super::{AuthCallback, Namespace, ServerResult};
 use crate::{
 	client::RawClient,
-	protocol::{
-		constants::INVALID_HANDSHAKE, control_messages::HandshakeData, StealthStreamMessage, StealthStreamPacketError,
-	},
+	protocol::{constants::INVALID_HANDSHAKE, control::HandshakeData, StealthStreamMessage, StealthStreamPacketError},
 };
 
 pub struct Server {
@@ -20,9 +18,8 @@ pub struct Server {
 	address: SocketAddr,
 	poke_delay: u64,
 	handshake_timeout: u64,
-	on_open: Arc<dyn OpenCallback>,
-	on_message: Arc<dyn MessageCallback>,
-	on_close: Arc<dyn CloseCallback>,
+	auth_handler: Arc<dyn AuthCallback>,
+	namespace_handlers: HashMap<String, Namespace>,
 	#[cfg(feature = "tls")]
 	tls_config: Arc<ServerConfig>,
 }
@@ -30,7 +27,7 @@ impl Server {
 	/// Used internally by the ServerBuilder to create a new [Server] instance.
 	pub(super) fn new(
 		listener: TcpListener, address: SocketAddr, poke_delay: u64, handshake_timeout: u64,
-		on_open: Arc<dyn OpenCallback>, on_message: Arc<dyn MessageCallback>, on_close: Arc<dyn CloseCallback>,
+		auth_handler: Arc<dyn AuthCallback>, namespace_handlers: HashMap<String, Namespace>,
 		#[cfg(feature = "tls")] server_config: Option<ServerConfig>,
 	) -> Self {
 		#[cfg(feature = "signals")] // TODO: implement this properly or not at all?
@@ -47,9 +44,8 @@ impl Server {
 			address,
 			poke_delay,
 			handshake_timeout,
-			on_open,
-			on_message,
-			on_close,
+			auth_handler,
+			namespace_handlers,
 			#[cfg(feature = "tls")]
 			tls_config: Arc::new(server_config.unwrap()),
 		}
@@ -70,13 +66,14 @@ impl Server {
 					debug!("Accepted connection from {:?}", address);
 
 					#[cfg(feature = "tls")]
-					let tls_stream = match acceptor.accept(tcp_stream).await {
-						Ok(tls_stream) => tls_stream,
-						Err(e) => {
-							error!("Error accepting TLS connection: {:?}", e);
-							continue;
-						},
-					};
+					let tls_stream =
+						match acceptor.accept(tcp_stream).await {
+							Ok(tls_stream) => tls_stream,
+							Err(e) => {
+								error!("Error accepting TLS connection: {:?}", e);
+								continue;
+							},
+						};
 
 					#[cfg(not(feature = "tls"))]
 					let client = Arc::new(RawClient::from_stream(tcp_stream, address));
@@ -95,19 +92,27 @@ impl Server {
 	/// creating a poke task to keep the connection alive.
 	async fn handle_client(&self, client: Arc<RawClient>) {
 		let timeout = self.handshake_timeout;
-		let handshake_result = HandshakeData::start_server_handshake(&client, timeout).await;
+		let handshake_result =
+			HandshakeData::start_server_handshake(&client, &self.namespace_handlers, &self.auth_handler, timeout).await;
 
 		match handshake_result {
 			Ok(data) => {
-				let open_callback = self.on_open.clone();
-				tokio::task::spawn(open_callback(data, client.clone()));
+				let namespace = data.namespace.to_string();
+
+				// safe to unwrap here because we check for bad namespaces above
+				let callbacks = self
+					.namespace_handlers
+					.get(&namespace)
+					.unwrap_or_else(|| panic!("No callbacks found for namespace: {}", namespace));
+
+				tokio::task::spawn((callbacks.handlers.on_open.clone())(data, client.clone()));
 
 				let delay = self.poke_delay;
 				tokio::task::spawn(Self::poke_task(client.clone(), delay));
 
 				let (write_tx, write_rx) = mpsc::channel::<StealthStreamMessage>(100);
 				Self::spawn_read_task(&client, write_tx);
-				self.spawn_write_task(&client, write_rx);
+				self.spawn_write_task(&client, write_rx, &namespace);
 			},
 			Err(e) => {
 				error!("Error handshaking for client: {:?}", e);
@@ -176,11 +181,12 @@ impl Server {
 
 	/// Spawns a write task that will recieve messages from the mpsc channel and
 	/// send them to the callback/event handler.
-	fn spawn_write_task(&self, client: &Arc<RawClient>, mut rx: mpsc::Receiver<StealthStreamMessage>) {
+	fn spawn_write_task(&self, client: &Arc<RawClient>, mut rx: mpsc::Receiver<StealthStreamMessage>, namespace: &str) {
+		let retrieved = self.namespace_handlers.get(namespace).unwrap();
 		tokio::task::spawn({
 			let write_client = client.clone();
-			let close_callback = self.on_close.clone();
-			let normal_callback = self.on_message.clone();
+			let close_callback = retrieved.handlers.on_close.clone();
+			let normal_callback = retrieved.handlers.on_message.clone();
 
 			async move {
 				while let Some(message) = rx.recv().await {
@@ -214,7 +220,7 @@ mod tests {
 	use crate::{
 		client::ClientBuilder,
 		pin_callback,
-		protocol::{control_messages::HandshakeData, data_messages::MessageData, StealthStreamMessage},
+		protocol::{control::HandshakeData, data::MessageData, StealthStreamMessage},
 		server::{MessageCallback, ServerBuilder},
 	};
 
@@ -319,7 +325,7 @@ mod tests {
 		let mut raw_stream = TcpStream::connect(server.address())
 			.await
 			.expect("couldn't connect to server");
-		let handshake = StealthStreamMessage::Handshake(HandshakeData::new(1, false, None));
+		let handshake = StealthStreamMessage::Handshake(HandshakeData::new(1, false, "/", None));
 		let mut test = handshake.to_packet().unwrap();
 
 		let bytes: Vec<u8> = test.pop().unwrap().into();

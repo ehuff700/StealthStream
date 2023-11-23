@@ -24,8 +24,9 @@ use crate::protocol::tls::{CertVerifier, ServerTlsStream};
 use crate::{
 	errors::ClientErrors,
 	protocol::{
-		constants::GRACEFUL, control_messages::HandshakeData, GoodbyeCodes, StealthStream, StealthStreamMessage,
-		StealthStreamPacketError,
+		constants::GRACEFUL,
+		control::{AuthData, HandshakeData},
+		GoodbyeCodes, StealthStream, StealthStreamMessage, StealthStreamPacketError,
 	},
 	server::MessageCallback,
 	StealthStreamResult,
@@ -216,12 +217,12 @@ pub struct Client {
 }
 
 impl Client {
-	/// Connects to a StealthStream server at the given address
-	pub async fn connect<A>(&mut self, addr: A) -> ClientResult<()>
+	/// Internal function which handles the actual connection.
+	async fn _connect<A>(&mut self, addr: A, namespace: &str, auth: Option<AuthData>) -> ClientResult<()>
 	where
 		A: ToSocketAddrs,
 	{
-		let address = addr.to_socket_addrs()?.next().unwrap(); // TODO: fix this
+		let address = addr.to_socket_addrs()?.next().unwrap(); //FIXME
 		let peer_address = AddressContext::ServerAddress(address);
 
 		#[cfg(feature = "tls")]
@@ -232,10 +233,10 @@ impl Client {
 
 		self.inner = Some(Arc::new(inner));
 
-		HandshakeData::start_client_handshake(self, self.should_compress).await?;
+		HandshakeData::start_client_handshake(self, self.should_compress, namespace, auth).await?;
 
 		// Setup a ctrl + c listener to gracefully close the connection.
-		#[cfg(feature = "signals")]
+		#[cfg(feature = "signals")] // TODO: make sure this only runs once.
 		tokio::task::spawn({
 			let cloned = self.clone();
 			async move {
@@ -249,33 +250,51 @@ impl Client {
 		Ok(())
 	}
 
+	/// Connects to a StealthStream server at the given address
+	///
+	/// This function will connect to the root namespace with no authentication.
+	pub async fn connect<A>(&mut self, addr: A) -> ClientResult<()>
+	where
+		A: ToSocketAddrs,
+	{
+		self._connect(addr, "/", None).await
+	}
+
+	/// Connects to the namespace on the StealthStream server at the given
+	/// address.
+	///
+	/// This function will connect to the provided namespace, with the optional
+	/// authentication data.
+	pub async fn connect_to_namespace<A>(
+		&mut self, addr: A, namespace: &str, auth: Option<AuthData>,
+	) -> ClientResult<()>
+	where
+		A: ToSocketAddrs,
+	{
+		self._connect(addr, namespace, auth).await
+	}
+
 	/// Sends a message to/from the client to the stream.
 	pub async fn send(&self, message: StealthStreamMessage) -> ClientResult<()> { self.inner()?.send(message).await }
 
-	/// Spawns a new tokio task which listens for incoming messages.
+	/// Spawns a blocking loop which listens for incoming messages from the
+	/// server.
 	///
-	/// While the client is connected, it will recieve messagees from the server
+	/// While the client is connected, it will recieve messages from the server
 	/// and call the event handler of this client with the message.
 	pub async fn listen(&self) -> StealthStreamResult<()> {
 		let inner = self.inner()?;
-		tokio::task::spawn({
-			let cloned = inner.clone();
-			let callback = self.event_handler.clone();
-			async move {
-				while cloned.is_connected() {
-					while let Some(packet) = cloned.receive().await {
-						match packet {
-							Ok(message) => {
-								callback(message, cloned.clone()).await;
-							},
-							Err(e) => return Err(e), // TODO: handle errors on the client side
-						}
-					}
+		let callback = &self.event_handler;
+		while inner.is_connected() {
+			while let Some(packet) = inner.receive().await {
+				match packet {
+					Ok(message) => {
+						callback(message, inner.clone()).await;
+					},
+					Err(e) => return Err(e)?, // TODO: handle errors on the client side
 				}
-				Ok(())
 			}
-		});
-
+		}
 		Ok(())
 	}
 
@@ -308,15 +327,20 @@ impl Client {
 		}
 	}
 
+	/// Returns the remote address of the peer this client is connected to, if
+	/// any.
+	pub fn peer_address(&self) -> Option<AddressContext> {
+		let inner = self.inner().ok();
+		inner.map(|inner| inner.peer_address.clone())
+	}
+
 	/// Convenience method used internally by the crate to return the inner
 	/// when we know it's valid.
 	pub fn inner(&self) -> ClientResult<Arc<RawClient>> {
 		if let Some(inner) = self.inner.as_ref() {
 			Ok(inner.clone())
 		} else {
-			Err(ClientErrors::ConnectionError(
-				anyhow!("Client is currently not connected").into(),
-			))
+			Err(ClientErrors::ConnectionError(anyhow!("Client is currently not connected").into()))
 		}
 	}
 }
@@ -338,7 +362,7 @@ impl From<ClientBuilder> for Client {
 		}
 	}
 }
-#[cfg(test)]
+#[cfg(test)] // TODO: write namespace tests
 mod tests {
 	use std::{sync::Arc, time::Duration};
 
@@ -353,7 +377,7 @@ mod tests {
 		client::ClientBuilder,
 		errors::ClientErrors,
 		pin_callback,
-		protocol::{data_messages::MessageData, StealthStreamMessage, StealthStreamPacket, StealthStreamPacketError},
+		protocol::{data::MessageData, StealthStreamMessage, StealthStreamPacket, StealthStreamPacketError},
 		server::{MessageCallback, Server, ServerBuilder},
 	};
 
@@ -442,7 +466,8 @@ mod tests {
 
 		// Assert that messages can no longer be sent after disconnect.
 		let result = client.send(StealthStreamMessage::Heartbeat).await;
-		assert!(result.is_err_and(|e| matches!(e, ClientErrors::InvalidPacket(StealthStreamPacketError::StreamClosed))));
+		assert!(result
+			.is_err_and(|e| matches!(e, ClientErrors::InvalidPacket(StealthStreamPacketError::StreamClosed))));
 
 		drop(server);
 	}

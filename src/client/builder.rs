@@ -77,7 +77,7 @@ impl ClientBuilder {
 
 	/// Determines whether or not the client should attempt to compress the
 	/// stream using the LZ4 algorithm.
-	pub fn should_compress(mut self, should_compress: bool) -> Self {
+	pub fn compress(mut self, should_compress: bool) -> Self {
 		self.should_compress = should_compress;
 		self
 	}

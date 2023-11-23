@@ -1,3 +1,5 @@
+pub const PROTOCOL_VERSION: u8 = 1;
+
 /* Frame Flag Consts */
 pub const COMPLETION_FLAG: u8 = 0x0;
 pub const BEGINNING_FLAG: u8 = 0x1;
