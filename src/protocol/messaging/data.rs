@@ -114,7 +114,22 @@ impl MessageData {
 }
 
 impl AcknowledgeData {
-	pub fn new(ack_id: Uuid, content: Vec<u8>) -> Self { Self { ack_id, content } }
+	pub fn new<T>(ack_id: Uuid, content: T) -> Self
+	where
+		T: Serialize,
+	{
+		Self {
+			ack_id,
+			content: Self::serialize(content).unwrap(),
+		}
+	}
+
+	fn serialize<T>(content: T) -> Result<Vec<u8>, rmp_serde::encode::Error>
+	where
+		T: Serialize,
+	{
+		rmp_serde::to_vec(&content)
+	}
 
 	//TODO: make better error type
 	pub fn deserialize<T>(&self) -> Result<T, rmp_serde::decode::Error>

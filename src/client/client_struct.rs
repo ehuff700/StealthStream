@@ -16,7 +16,7 @@ use serde::Deserialize;
 use tokio::{net::TcpStream, signal};
 #[cfg(feature = "tls")]
 use tokio_rustls::{TlsConnector, TlsStream};
-use tracing::error;
+use tracing::{debug, error};
 use uuid::Uuid;
 
 use super::ClientBuilder;
@@ -304,6 +304,7 @@ impl Client {
 	where
 		T: for<'a> Deserialize<'a> + Send + Sync + 'static,
 	{
+		debug!("was this triggered");
 		let ack = self.inner()?.send_with_ack(message).await?;
 		if let Some(ack) = ack {
 			let content = ack.deserialize::<T>()?;

@@ -93,6 +93,14 @@ impl StealthStreamMessage {
 		let edata = ErrorData::new(code, reason.to_string());
 		Self::Error(edata)
 	}
+
+	/// Determines whether or not the boolean needs an acknowledgement.
+	pub fn needs_ack(&self) -> bool {
+		match self {
+			StealthStreamMessage::Message(data) => data.ack_id().is_some(),
+			_ => false,
+		}
+	}
 }
 
 impl Display for StealthStreamMessage {
