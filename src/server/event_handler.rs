@@ -2,10 +2,10 @@ use std::sync::Arc;
 
 use tracing::debug;
 
-use super::{CloseCallback, MessageCallback, OpenCallback};
+use super::{AuthCallback, CloseCallback, MessageCallback, OpenCallback};
 use crate::{
 	client::RawClient,
-	pin_callback,
+	pin_auth_callback, pin_callback,
 	protocol::{
 		control::{GoodbyeData, HandshakeData},
 		StealthStreamMessage,
@@ -51,17 +51,24 @@ impl Namespace {
 	/// Defines an event handler which will be invoked when a connection is
 	/// closed.
 	pub fn onclose(&mut self, close_callback: impl CloseCallback) { self.handlers.on_close = Arc::new(close_callback); }
+
+	/// Defines an event handler which will be invoked when an attempt is made
+	/// to authenticate to a namespace.
+	pub fn onauth(&mut self, auth_callback: impl AuthCallback) { self.handlers.on_auth = Arc::new(auth_callback); }
 }
 
 /// Used to create Event Handlers for a [Namespace] or a [Server] (assuming
 /// default "/" namespace).
 pub(crate) struct EventHandler {
+	pub on_auth: Arc<dyn AuthCallback>,
 	pub on_open: Arc<dyn OpenCallback>,
 	pub on_message: Arc<dyn MessageCallback>,
 	pub on_close: Arc<dyn CloseCallback>,
 }
 
 impl EventHandler {
+	fn default_auth_handler() -> Arc<dyn AuthCallback> { Arc::new(move |_, _| pin_auth_callback!({ Ok(true) })) }
+
 	fn default_message_handler() -> Arc<dyn MessageCallback> {
 		let handler = |message: StealthStreamMessage, _: Arc<RawClient>| {
 			pin_callback!({
@@ -94,6 +101,7 @@ impl EventHandler {
 impl Default for EventHandler {
 	fn default() -> Self {
 		Self {
+			on_auth: Self::default_auth_handler(),
 			on_open: Self::default_open_handler(),
 			on_message: Self::default_message_handler(),
 			on_close: Self::default_close_handler(),

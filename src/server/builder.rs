@@ -23,7 +23,6 @@ use super::{
 };
 #[cfg(feature = "tls")]
 use crate::errors::Error;
-use crate::{client::RawClient, pin_auth_callback, protocol::control::AuthData};
 
 /// Utility Struct to build a [Server] as needed
 pub struct ServerBuilder {
@@ -36,14 +35,6 @@ pub struct ServerBuilder {
 	/// The accepted delay (in ms) in which a client must negotiate a successful
 	/// handshake.
 	handshake_timeout: u64,
-	/// An optional callback which will be invoked when a client attempts to
-	/// authenticate. This authenication callback should return `Ok(true)` if
-	/// the client is authenticated, `Ok(false)` if not, and can optionally
-	/// return an error to be sent to the client with Err(e).
-	///
-	/// If one is not provided, a default callback will be used which simply
-	/// return `Ok(true)`.
-	auth_callback: Option<Arc<dyn AuthCallback>>,
 	/// Namespace event handlers are a key-value map of namespace identifiers to
 	/// their respective event handlers. This is optional and can be used if you
 	/// want to define your own event handlers for namespaces.
@@ -72,7 +63,6 @@ impl ServerBuilder {
 			port: 7007,
 			poke_delay: 5000,
 			handshake_timeout: 2000,
-			auth_callback: None,
 			namespace_event_handlers,
 			#[cfg(feature = "tls")]
 			cert_file_path: None,
@@ -134,6 +124,17 @@ impl ServerBuilder {
 		self
 	}
 
+	/// Defines an event handler for all authentication attempts to the root
+	/// namespace.
+	///
+	/// Returning `Ok(true)` in the callback means successful auth, `Ok(false)`
+	/// means failed authentication, and an `Err(e)` means there was an error.
+	pub fn onauth(mut self, auth_handler: impl AuthCallback) -> Self {
+		let root = self.namespace_event_handlers.get_mut("/").unwrap();
+		root.handlers.on_auth = Arc::new(auth_handler);
+		self
+	}
+
 	/// Adds a new namespace to the server.
 	pub fn with_namespace(mut self, namespace: Namespace) -> Self {
 		self.namespace_event_handlers
@@ -160,7 +161,6 @@ impl ServerBuilder {
 	pub async fn build(self) -> ServerResult<Server> {
 		let address = SocketAddr::new(self.address, self.port);
 		let listener = TcpListener::bind(address).await?;
-		let auth_callback = self.auth_callback.unwrap_or(Self::default_auth_callback());
 		#[cfg(feature = "tls")]
 		{
 			let cert_file_path = self
@@ -201,15 +201,9 @@ impl ServerBuilder {
 				SocketAddr::new(self.address, self.port),
 				self.poke_delay,
 				self.handshake_timeout,
-				auth_callback,
 				self.namespace_event_handlers,
 			))
 		}
-	}
-
-	fn default_auth_callback() -> Arc<dyn AuthCallback> {
-		let handler = |_: &AuthData, _: Arc<RawClient>| pin_auth_callback!({ Ok(true) });
-		Arc::new(handler)
 	}
 }
 
