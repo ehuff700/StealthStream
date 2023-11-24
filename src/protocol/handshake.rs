@@ -38,7 +38,7 @@ impl HandshakeData {
 						let auth_handler = &namespace.handlers.on_auth;
 						match data.auth.as_ref() {
 							Some(auth) => {
-								match auth_handler(auth, client.clone()).await {
+								match auth_handler(auth.clone(), client.clone()).await {
 									Ok(true) => {
 										debug!("Successfully authenticated client {:?}", client.peer_address());
 									},

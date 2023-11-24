@@ -7,7 +7,7 @@ use crate::{
 	client::RawClient,
 	pin_auth_callback, pin_callback,
 	protocol::{
-		control::{GoodbyeData, HandshakeData},
+		control::{AuthData, GoodbyeData, HandshakeData},
 		StealthStreamMessage,
 	},
 };
@@ -67,7 +67,10 @@ pub(crate) struct EventHandler {
 }
 
 impl EventHandler {
-	fn default_auth_handler() -> Arc<dyn AuthCallback> { Arc::new(move |_, _| pin_auth_callback!({ Ok(true) })) }
+	fn default_auth_handler() -> Arc<dyn AuthCallback> {
+		let handler = |_: AuthData, _: Arc<RawClient>| pin_auth_callback!({ Ok(true) });
+		Arc::new(handler)
+	}
 
 	fn default_message_handler() -> Arc<dyn MessageCallback> {
 		let handler = |message: StealthStreamMessage, _: Arc<RawClient>| {

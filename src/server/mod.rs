@@ -42,6 +42,6 @@ impl<F> OpenCallback for F where F: Fn(HandshakeData, Arc<RawClient>) -> BoxedCa
 pub trait CloseCallback: Fn(GoodbyeData, Arc<RawClient>) -> BoxedCallbackFuture + Sync + Send + 'static {}
 impl<F> CloseCallback for F where F: Fn(GoodbyeData, Arc<RawClient>) -> BoxedCallbackFuture + Sync + Send + 'static {}
 
-pub trait AuthCallback: Fn(&AuthData, Arc<RawClient>) -> BoxedBoolFuture + Sync + Send + 'static {}
+pub trait AuthCallback: Fn(AuthData, Arc<RawClient>) -> BoxedBoolFuture + Sync + Send + 'static {}
 
-impl<F> AuthCallback for F where F: Fn(&AuthData, Arc<RawClient>) -> BoxedBoolFuture + Sync + Send + 'static {}
+impl<F> AuthCallback for F where F: Fn(AuthData, Arc<RawClient>) -> BoxedBoolFuture + Sync + Send + 'static {}
