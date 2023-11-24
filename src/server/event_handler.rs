@@ -40,24 +40,17 @@ impl Namespace {
 
 	/// Defines an event handler which will be invoked when a new connection is
 	/// opened.
-	pub fn onopen(mut self, open_callback: impl OpenCallback) -> Self {
-		self.handlers.on_open = Arc::new(open_callback);
-		self
-	}
+	pub fn onopen(&mut self, open_callback: impl OpenCallback) { self.handlers.on_open = Arc::new(open_callback); }
 
 	/// Defines an event handler which will be invoked when a message is
 	/// received.
-	pub fn onmessage(mut self, message_callback: impl MessageCallback) -> Self {
+	pub fn onmessage(&mut self, message_callback: impl MessageCallback) {
 		self.handlers.on_message = Arc::new(message_callback);
-		self
 	}
 
 	/// Defines an event handler which will be invoked when a connection is
 	/// closed.
-	pub fn onclose(mut self, close_callback: impl CloseCallback) -> Self {
-		self.handlers.on_close = Arc::new(close_callback);
-		self
-	}
+	pub fn onclose(&mut self, close_callback: impl CloseCallback) { self.handlers.on_close = Arc::new(close_callback); }
 }
 
 /// Used to create Event Handlers for a [Namespace] or a [Server] (assuming
