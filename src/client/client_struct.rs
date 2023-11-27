@@ -12,10 +12,11 @@ use anyhow::anyhow;
 use rustls::ClientConfig;
 #[cfg(feature = "tls")]
 use rustls::{RootCertStore, ServerName};
+use serde::Deserialize;
 use tokio::{net::TcpStream, signal};
 #[cfg(feature = "tls")]
 use tokio_rustls::{TlsConnector, TlsStream};
-use tracing::error;
+use tracing::{debug, error};
 use uuid::Uuid;
 
 use super::ClientBuilder;
@@ -26,11 +27,13 @@ use crate::{
 	protocol::{
 		constants::GRACEFUL,
 		control::{AuthData, HandshakeData},
+		data::{AcknowledgeData, MessageData},
 		GoodbyeCodes, StealthStream, StealthStreamMessage, StealthStreamPacketError,
 	},
-	server::MessageCallback,
+	server::ClientMessageCallback,
 	StealthStreamResult,
 };
+
 pub type ClientResult<T> = std::result::Result<T, ClientErrors>;
 
 #[derive(Debug, Clone)]
@@ -152,6 +155,21 @@ impl RawClient {
 		}
 	}
 
+	pub async fn send_with_ack(&self, message: MessageData) -> ClientResult<Option<AcknowledgeData>> {
+		let ack_id = message.ack_id().unwrap(); // TODO: change this?
+		let message = StealthStreamMessage::Message(message);
+
+		if self.is_connected() {
+			self.raw_socket
+				.write_all(message.to_packet()?)
+				.await
+				.map_err(ClientErrors::from)?;
+			Ok(self.raw_socket.wait_for_ack(ack_id).await.map_err(ClientErrors::from)?)
+		} else {
+			Err(StealthStreamPacketError::StreamClosed)?
+		}
+	}
+
 	/// Gracefully disconnects the client from the server by sending a
 	/// [StealthStreamMessage::Goodbye] message as well as updating the
 	/// connection state.
@@ -208,7 +226,7 @@ pub struct Client {
 	pub(crate) session_id: Option<Uuid>,
 	/// Custom event handler defined by the client for use in recieving messages
 	/// from the server.
-	event_handler: Arc<dyn MessageCallback>,
+	event_handler: Arc<dyn ClientMessageCallback>,
 	/// Whether or not the client should compress the stream using LZ4.
 	should_compress: bool,
 	/// Whether or not the client should skip certificate validation.
@@ -234,6 +252,11 @@ impl Client {
 		self.inner = Some(Arc::new(inner));
 
 		HandshakeData::start_client_handshake(self, self.should_compress, namespace, auth).await?;
+		/* TODO: fix this
+		if let Some(Ok(_value)) = self.inner()?.receive().await {
+		} else {
+
+		};*/
 
 		// Setup a ctrl + c listener to gracefully close the connection.
 		#[cfg(feature = "signals")] // TODO: make sure this only runs once.
@@ -277,10 +300,25 @@ impl Client {
 	/// Sends a message to/from the client to the stream.
 	pub async fn send(&self, message: StealthStreamMessage) -> ClientResult<()> { self.inner()?.send(message).await }
 
+	/// Sends a message from the client while waiting for an acknowledgement.
+	pub async fn send_with_ack<T>(&self, message: MessageData) -> ClientResult<T>
+	where
+		T: for<'a> Deserialize<'a> + Send + Sync + 'static,
+	{
+		debug!("was this triggered");
+		let ack = self.inner()?.send_with_ack(message).await?;
+		if let Some(ack) = ack {
+			let content = ack.deserialize::<T>()?;
+			Ok(content)
+		} else {
+			Err(StealthStreamPacketError::StreamClosed)?
+		}
+	}
+
 	/// Spawns a blocking loop which listens for incoming messages from the
 	/// server.
 	///
-	/// While the client is connected, it will recieve messages from the server
+	/// While the client is connected, it will receive messages from the server
 	/// and call the event handler of this client with the message.
 	pub async fn listen(&self) -> StealthStreamResult<()> {
 		let inner = self.inner()?;
@@ -340,7 +378,9 @@ impl Client {
 		if let Some(inner) = self.inner.as_ref() {
 			Ok(inner.clone())
 		} else {
-			Err(ClientErrors::ConnectionError(anyhow!("Client is currently not connected").into()))
+			Err(ClientErrors::ConnectionError(
+				anyhow!("Client is currently not connected").into(),
+			))
 		}
 	}
 }
@@ -378,12 +418,12 @@ mod tests {
 		errors::ClientErrors,
 		pin_callback,
 		protocol::{data::MessageData, StealthStreamMessage, StealthStreamPacket, StealthStreamPacketError},
-		server::{MessageCallback, Server, ServerBuilder},
+		server::{Namespace, Server, ServerBuilder, ServerMessageCallback},
 	};
 
 	macro_rules! server_client_setup1 {
 		() => {{
-			let server = basic_server_setup(|_, _| pin_callback!({})).await;
+			let server = basic_server_setup(|_, _, _| pin_callback!({})).await;
 			#[cfg(not(feature = "tls"))]
 			let mut client = ClientBuilder::default().build();
 
@@ -429,12 +469,19 @@ mod tests {
 
 	async fn basic_server_setup<T>(callback: T) -> Arc<Server>
 	where
-		T: MessageCallback,
+		T: ServerMessageCallback,
 	{
 		let mut rng = rand::thread_rng();
 		let random_number: u16 = rng.gen_range(1000..10000);
+		let client_namespace = Namespace::new("/client", false);
+		let admin_namespace = Namespace::new("/admin", true);
+
 		#[cfg(not(feature = "tls"))]
-		let server = ServerBuilder::default().port(random_number).onmessage(callback);
+		let server = ServerBuilder::default()
+			.with_namespace(admin_namespace)
+			.with_namespace(client_namespace)
+			.port(random_number)
+			.onmessage(callback);
 		#[cfg(feature = "tls")]
 		let server = ServerBuilder::default()
 			.cert_file_path("src/test_cert.pem")
@@ -458,7 +505,7 @@ mod tests {
 
 	#[tokio::test]
 	async fn test_disconnect() {
-		let (server, client) = server_client_setup1!();
+		let (server, mut client) = server_client_setup1!();
 
 		assert!(client.is_connected());
 		client.disconnect().await.unwrap();
@@ -466,30 +513,78 @@ mod tests {
 
 		// Assert that messages can no longer be sent after disconnect.
 		let result = client.send(StealthStreamMessage::Heartbeat).await;
-		assert!(result
-			.is_err_and(|e| matches!(e, ClientErrors::InvalidPacket(StealthStreamPacketError::StreamClosed))));
+		assert!(result.is_err_and(|e| matches!(e, ClientErrors::InvalidPacket(StealthStreamPacketError::StreamClosed))));
+
+		client
+			.connect_to_namespace(server.address(), "/client", None)
+			.await
+			.unwrap();
+
+		assert!(client.is_connected());
+		client.disconnect().await.unwrap();
+		assert!(!client.is_connected());
 
 		drop(server);
+	}
+
+	#[tokio::test]
+	async fn test_namespaces() {
+		//tracing_subscriber::fmt().with_max_level(LevelFilter::DEBUG).init();
+		let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+
+		let (server, mut client) = server_client_setup1!(
+			{
+				let cloned = tx.clone();
+				move |recieved_message, _, _| {
+					let tx = cloned.clone();
+					pin_callback!({
+						tx.send(recieved_message).await.unwrap();
+					})
+				}
+			},
+			{
+				move |recieved_message, _| {
+					let tx = tx.clone();
+					pin_callback!({
+						tx.send(recieved_message).await.unwrap();
+					})
+				}
+			}
+		);
+
+		client
+			.connect_to_namespace(server.address(), "/admin", None)
+			.await
+			.unwrap();
+		tokio::task::spawn({
+			let cloned = client.clone();
+			async move { cloned.listen().await }
+		});
+
+		let r = rx.recv().await;
+		// Test that server sends a goodbye message to the client, because an attempt to
+		// access a privileged namespace. TODO: enhance this to assert_eq
+		assert!(r.is_some_and(|a| matches!(a, StealthStreamMessage::Goodbye(_))));
 	}
 
 	#[tokio::test]
 	async fn test_basic_send() {
 		let (server, client) = server_client_setup1!();
 
-		let message = super::StealthStreamMessage::Message(MessageData::new(b"Test Message!", false));
+		let message = super::StealthStreamMessage::Message(MessageData::new(b"Test Message!", false, false));
 		assert!(client.send(message).await.is_ok());
 		drop(server)
 	}
 
 	#[tokio::test]
-	async fn test_basic_recieve() {
+	async fn test_basic_receive() {
 		//tracing_subscriber::fmt().with_max_level(LevelFilter::DEBUG).init();
 
 		let (tx, mut rx) = tokio::sync::mpsc::channel(1);
 		let test_txt = "Test Message!";
 
 		let (_, client) = server_client_setup1!({
-			move |recieved_message, _| {
+			move |recieved_message, _, _| {
 				let tx = tx.clone();
 				pin_callback!({
 					tx.send(recieved_message).await.unwrap();
@@ -497,12 +592,12 @@ mod tests {
 			}
 		});
 
-		/* Test Successful Recieve */
-		let expected = StealthStreamMessage::Message(MessageData::new(test_txt.as_bytes(), true));
+		/* Test Successful Receive */
+		let expected = StealthStreamMessage::Message(MessageData::new(test_txt.as_bytes(), true, false));
 		client.send(expected).await.expect("error sending message");
 
 		let received = rx.recv().await.expect("didn't receive valid stealthstream message");
-		let expected = StealthStreamMessage::Message(MessageData::new(test_txt.as_bytes(), true));
+		let expected = StealthStreamMessage::Message(MessageData::new(test_txt.as_bytes(), true, false));
 
 		assert_eq!(received, expected, "the received message did not match the expected one");
 	}
@@ -513,7 +608,7 @@ mod tests {
 		let (tx, mut rx) = tokio::sync::mpsc::channel(10);
 
 		let (_, client) = server_client_setup1!({
-			move |recieved_message, _| {
+			move |recieved_message, _, _| {
 				let tx = tx.clone();
 				info!("Recieved message: {}", recieved_message);
 				pin_callback!({
@@ -536,7 +631,7 @@ mod tests {
 		assert!(received.is_err());
 
 		/* Assert that normal packets can be sent after bad ones */
-		let expected = StealthStreamMessage::Message(MessageData::new(b"hey", true));
+		let expected = StealthStreamMessage::Message(MessageData::new(b"hey", true, false));
 		client.send(expected).await.unwrap();
 		let received = timeout(Duration::from_millis(300), rx.recv()).await;
 		assert!(received.is_ok_and(|v| v.is_some()));
@@ -548,9 +643,9 @@ mod tests {
 		let (tx, mut rx) = tokio::sync::mpsc::channel(10);
 
 		let (_, client) = server_client_setup1!({
-			move |recieved_message, _| {
+			move |recieved_message, _, _| {
 				let tx = tx.clone();
-				info!("Recieved message: {}", recieved_message);
+				info!("Received message: {}", recieved_message);
 				pin_callback!({
 					tx.send(recieved_message).await.unwrap();
 				})
@@ -569,7 +664,6 @@ mod tests {
 		/* Test content overflow */
 		let gen = generate_long_string(1024 * 16);
 		let result = client.send(StealthStreamMessage::create_utf8_message(&gen)).await;
-		println!("result: {:?}", result);
 		assert!(result.is_err_and(|e| matches!(
 			e,
 			ClientErrors::InvalidPacket(StealthStreamPacketError::MessageContentsOverflowed(_))

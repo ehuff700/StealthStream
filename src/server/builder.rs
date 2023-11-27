@@ -19,11 +19,11 @@ use tokio::net::TcpListener;
 use tokio_rustls::rustls::ServerConfig;
 
 use super::{
-	server_struct::Server, AuthCallback, CloseCallback, MessageCallback, Namespace, OpenCallback, ServerResult,
+	server_struct::Server, AuthCallback, CloseCallback, Namespace, OpenCallback, ServerMessageCallback, ServerResult,
 };
 #[cfg(feature = "tls")]
 use crate::errors::Error;
-use crate::{client::RawClient, pin_auth_callback, protocol::control::AuthData};
+use crate::server::state::{InnerState, State};
 
 /// Utility Struct to build a [Server] as needed
 pub struct ServerBuilder {
@@ -36,14 +36,6 @@ pub struct ServerBuilder {
 	/// The accepted delay (in ms) in which a client must negotiate a successful
 	/// handshake.
 	handshake_timeout: u64,
-	/// An optional callback which will be invoked when a client attempts to
-	/// authenticate. This authenication callback should return `Ok(true)` if
-	/// the client is authenticated, `Ok(false)` if not, and can optionally
-	/// return an error to be sent to the client with Err(e).
-	///
-	/// If one is not provided, a default callback will be used which simply
-	/// return `Ok(true)`.
-	auth_callback: Option<Arc<dyn AuthCallback>>,
 	/// Namespace event handlers are a key-value map of namespace identifiers to
 	/// their respective event handlers. This is optional and can be used if you
 	/// want to define your own event handlers for namespaces.
@@ -51,6 +43,7 @@ pub struct ServerBuilder {
 	/// At the very minimum, by default this will have one entry to handle the
 	/// root "/" namespace.
 	namespace_event_handlers: HashMap<String, Namespace>,
+	state: InnerState,
 	#[cfg(feature = "tls")]
 	/// The path to the TLS certificate.
 	cert_file_path: Option<PathBuf>,
@@ -72,8 +65,8 @@ impl ServerBuilder {
 			port: 7007,
 			poke_delay: 5000,
 			handshake_timeout: 2000,
-			auth_callback: None,
 			namespace_event_handlers,
+			state: InnerState::default(),
 			#[cfg(feature = "tls")]
 			cert_file_path: None,
 			#[cfg(feature = "tls")]
@@ -113,7 +106,7 @@ impl ServerBuilder {
 	/// Sets the event handler for all incoming [StealthStreamMessage]s to the
 	/// root namespace, with the exception of handshakes (those go to open) and
 	/// goodbyes (those go to close)
-	pub fn onmessage(mut self, event_handler: impl MessageCallback) -> Self {
+	pub fn onmessage(mut self, event_handler: impl ServerMessageCallback) -> Self {
 		let root = self.namespace_event_handlers.get_mut("/").unwrap();
 		root.handlers.on_message = Arc::new(event_handler);
 		self
@@ -134,10 +127,33 @@ impl ServerBuilder {
 		self
 	}
 
+	/// Defines an event handler for all authentication attempts to the root
+	/// namespace.
+	///
+	/// Returning `Ok(true)` in the callback means successful auth, `Ok(false)`
+	/// means failed authentication, and an `Err(e)` means there was an error.
+	pub fn onauth(mut self, auth_handler: impl AuthCallback) -> Self {
+		let root = self.namespace_event_handlers.get_mut("/").unwrap();
+		root.handlers.on_auth = Arc::new(auth_handler);
+		self
+	}
+
 	/// Adds a new namespace to the server.
 	pub fn with_namespace(mut self, namespace: Namespace) -> Self {
 		self.namespace_event_handlers
 			.insert(namespace.identifier.to_string(), namespace);
+		self
+	}
+
+	/// Adds a new [State] object to the server.
+	///
+	/// This method can be used to store any objects that need to be persisted
+	/// during the lifetime of the server.
+	pub fn with_state<T>(mut self, state: State<T>) -> Self
+	where
+		T: Send + Sync + 'static,
+	{
+		self.state.insert(state);
 		self
 	}
 
@@ -160,7 +176,7 @@ impl ServerBuilder {
 	pub async fn build(self) -> ServerResult<Server> {
 		let address = SocketAddr::new(self.address, self.port);
 		let listener = TcpListener::bind(address).await?;
-		let auth_callback = self.auth_callback.unwrap_or(Self::default_auth_callback());
+		let inner_state = Arc::new(self.state);
 		#[cfg(feature = "tls")]
 		{
 			let cert_file_path = self
@@ -190,7 +206,8 @@ impl ServerBuilder {
 				SocketAddr::new(self.address, self.port),
 				self.poke_delay,
 				self.handshake_timeout,
-				namespace_handlers,
+				self.namespace_event_handlers,
+				inner_state,
 				Some(config),
 			))
 		}
@@ -201,15 +218,10 @@ impl ServerBuilder {
 				SocketAddr::new(self.address, self.port),
 				self.poke_delay,
 				self.handshake_timeout,
-				auth_callback,
 				self.namespace_event_handlers,
+				inner_state,
 			))
 		}
-	}
-
-	fn default_auth_callback() -> Arc<dyn AuthCallback> {
-		let handler = |_: &AuthData, _: Arc<RawClient>| pin_auth_callback!({ Ok(true) });
-		Arc::new(handler)
 	}
 }
 

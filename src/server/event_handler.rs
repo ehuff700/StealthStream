@@ -2,14 +2,15 @@ use std::sync::Arc;
 
 use tracing::debug;
 
-use super::{CloseCallback, MessageCallback, OpenCallback};
+use super::{AuthCallback, CloseCallback, OpenCallback, ServerMessageCallback};
 use crate::{
 	client::RawClient,
-	pin_callback,
+	pin_auth_callback, pin_callback,
 	protocol::{
-		control::{GoodbyeData, HandshakeData},
+		control::{AuthData, GoodbyeData, HandshakeData},
 		StealthStreamMessage,
 	},
+	server::state::InnerState,
 };
 
 pub struct Namespace {
@@ -40,37 +41,35 @@ impl Namespace {
 
 	/// Defines an event handler which will be invoked when a new connection is
 	/// opened.
-	pub fn onopen(mut self, open_callback: impl OpenCallback) -> Self {
-		self.handlers.on_open = Arc::new(open_callback);
-		self
-	}
+	pub fn onopen(&mut self, open_callback: impl OpenCallback) { self.handlers.on_open = Arc::new(open_callback); }
 
 	/// Defines an event handler which will be invoked when a message is
 	/// received.
-	pub fn onmessage(mut self, message_callback: impl MessageCallback) -> Self {
+	pub fn onmessage(&mut self, message_callback: impl ServerMessageCallback) {
 		self.handlers.on_message = Arc::new(message_callback);
-		self
 	}
 
 	/// Defines an event handler which will be invoked when a connection is
 	/// closed.
-	pub fn onclose(mut self, close_callback: impl CloseCallback) -> Self {
-		self.handlers.on_close = Arc::new(close_callback);
-		self
-	}
+	pub fn onclose(&mut self, close_callback: impl CloseCallback) { self.handlers.on_close = Arc::new(close_callback); }
+
+	/// Defines an event handler which will be invoked when an attempt is made
+	/// to authenticate to a namespace.
+	pub fn onauth(&mut self, auth_callback: impl AuthCallback) { self.handlers.on_auth = Arc::new(auth_callback); }
 }
 
 /// Used to create Event Handlers for a [Namespace] or a [Server] (assuming
 /// default "/" namespace).
 pub(crate) struct EventHandler {
+	pub on_auth: Arc<dyn AuthCallback>,
 	pub on_open: Arc<dyn OpenCallback>,
-	pub on_message: Arc<dyn MessageCallback>,
+	pub on_message: Arc<dyn ServerMessageCallback>,
 	pub on_close: Arc<dyn CloseCallback>,
 }
 
 impl EventHandler {
-	fn default_message_handler() -> Arc<dyn MessageCallback> {
-		let handler = |message: StealthStreamMessage, _: Arc<RawClient>| {
+	fn default_message_handler() -> Arc<dyn ServerMessageCallback> {
+		let handler = |message: StealthStreamMessage, _: Arc<RawClient>, _: Arc<InnerState>| {
 			pin_callback!({
 				debug!(target: "default_message_handler", "Received message: {:?}", message);
 			})
@@ -78,8 +77,13 @@ impl EventHandler {
 		Arc::new(handler)
 	}
 
+	fn default_auth_handler() -> Arc<dyn AuthCallback> {
+		let handler = |_: AuthData, _: Arc<RawClient>, _: Arc<InnerState>| pin_auth_callback!({ Ok(true) });
+		Arc::new(handler)
+	}
+
 	fn default_close_handler() -> Arc<dyn CloseCallback> {
-		let handler = |data: GoodbyeData, _: Arc<RawClient>| {
+		let handler = |data: GoodbyeData, _: Arc<RawClient>, _: Arc<InnerState>| {
 			pin_callback!({
 				debug!(target: "default_close_handler", "Client closed connection: {:?}", data);
 			})
@@ -88,7 +92,7 @@ impl EventHandler {
 	}
 
 	fn default_open_handler() -> Arc<dyn OpenCallback> {
-		let handler = |_: HandshakeData, client: Arc<RawClient>| {
+		let handler = |_: HandshakeData, client: Arc<RawClient>, _: Arc<InnerState>| {
 			pin_callback!({
 				debug!(target: "default_open_handler", "Client connected from {:?}", client.peer_address());
 			})
@@ -101,6 +105,7 @@ impl EventHandler {
 impl Default for EventHandler {
 	fn default() -> Self {
 		Self {
+			on_auth: Self::default_auth_handler(),
 			on_open: Self::default_open_handler(),
 			on_message: Self::default_message_handler(),
 			on_close: Self::default_close_handler(),

@@ -3,7 +3,7 @@ use std::{sync::Arc, time::Duration};
 use tracing::debug;
 
 use super::{Client, RawClient};
-use crate::{pin_callback, protocol::StealthStreamMessage, server::MessageCallback};
+use crate::{pin_callback, protocol::StealthStreamMessage, server::ClientMessageCallback};
 
 pub struct ClientBuilder {
 	/// Whether or not the client should attempt to reconnect when disconnected.
@@ -24,7 +24,7 @@ pub struct ClientBuilder {
 	/// Event handler for when a message is received from the server. If this
 	/// parameter is not specified, A default event handler which simply logs
 	/// the message will be used.
-	pub(crate) event_handler: Option<Arc<dyn MessageCallback>>,
+	pub(crate) event_handler: Option<Arc<dyn ClientMessageCallback>>,
 
 	/// Whether or not the client should attempt to compress the stream
 	///
@@ -70,7 +70,7 @@ impl ClientBuilder {
 	}
 
 	/// Adds an event handler for incoming messages from the server.
-	pub fn with_event_handler(mut self, event_handler: impl MessageCallback) -> Self {
+	pub fn with_event_handler(mut self, event_handler: impl ClientMessageCallback) -> Self {
 		self.event_handler = Some(Arc::new(event_handler));
 		self
 	}
@@ -96,7 +96,7 @@ impl ClientBuilder {
 	pub fn build(self) -> Client { self.into() }
 
 	/// Default event handler which simply logs the message.
-	pub(crate) fn default_event_handler() -> Arc<dyn MessageCallback> {
+	pub(crate) fn default_event_handler() -> Arc<dyn ClientMessageCallback> {
 		let handler = |message: StealthStreamMessage, _: Arc<RawClient>| {
 			pin_callback!({
 				debug!(target: "default_event_handler", "Received message: {}", message);

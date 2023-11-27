@@ -10,3 +10,4 @@ tokio = { version = "1.33.0", features = ["full"] }
 stealthstream = { path = ".." }
 tracing-subscriber = "0.3.17"
 tracing = "0.1.40"
+serde = { version = "*", features = ["derive"] }

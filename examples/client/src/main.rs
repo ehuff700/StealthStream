@@ -1,6 +1,16 @@
-use stealthstream::{client::ClientBuilder, protocol::StealthStreamMessage};
-use tracing::error;
+use serde::{Deserialize, Serialize};
+use stealthstream::{
+	client::ClientBuilder,
+	protocol::{data::MessageData, StealthStreamMessage},
+};
+use tracing::{debug, error};
 use tracing_subscriber::filter::LevelFilter;
+
+#[allow(dead_code)]
+#[derive(Deserialize, Serialize, Debug)]
+pub struct TestAck {
+	string: String,
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -14,7 +24,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 	//client.connect("192.155.94.253:7007").await?;
 
 	client.connect("127.0.0.1:7007").await?;
-	client.listen().await?;
+
+	tokio::task::spawn({
+		let cloned = client.clone();
+		async move {
+			if let Err(e) = cloned.listen().await {
+				error!("Error listening: {:?}", e);
+			}
+		}
+	});
+
+	let test = client
+		.send_with_ack::<TestAck>(MessageData::new("hey".as_bytes(), true, true))
+		.await;
+
+	debug!("test: {:?}", test);
 
 	while client.is_connected() {
 		if let Err(why) = client

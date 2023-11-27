@@ -9,10 +9,10 @@ use crate::protocol::{
 	StealthStreamPacketError,
 };
 
-#[derive(Debug, Getters, PartialEq)]
+#[derive(Debug, Getters, PartialEq, Clone)]
 pub struct AuthData {
 	username: String,
-	hashed_password: String,
+	password: String,
 }
 
 #[derive(Debug, PartialEq, Getters)]
@@ -48,7 +48,7 @@ impl StealthStreamPacketParser for HandshakeData {
 				handshake.extend_from_slice(username_bytes);
 
 				// Push password length prefix and bytes
-				let password_bytes = auth.hashed_password.as_bytes();
+				let password_bytes = auth.password.as_bytes();
 				let password_len = password_bytes.len() as u16;
 
 				handshake.extend_from_slice(&password_len.to_be_bytes());
@@ -79,32 +79,27 @@ impl StealthStreamPacketParser for HandshakeData {
 			}
 		})?;
 
-		let auth =
-			if bytes.get_u8() == 1 {
-				let username_len = bytes.get_u16() as usize;
-				let username =
-					String::from_utf8(bytes.copy_to_bytes(username_len).to_vec()).map_err(|e| {
-						StealthStreamPacketError::InvalidUtf8 {
-							source: e,
-							field: "username".to_string(),
-						}
-					})?;
+		let auth = if bytes.get_u8() == 1 {
+			let username_len = bytes.get_u16() as usize;
+			let username = String::from_utf8(bytes.copy_to_bytes(username_len).to_vec()).map_err(|e| {
+				StealthStreamPacketError::InvalidUtf8 {
+					source: e,
+					field: "username".to_string(),
+				}
+			})?;
 
-				let password_len = bytes.get_u16() as usize;
-				let hashed_password = String::from_utf8(bytes.copy_to_bytes(password_len).to_vec()).map_err(|e| {
-					StealthStreamPacketError::InvalidUtf8 {
-						source: e,
-						field: "hashed_password".to_string(),
-					}
-				})?;
+			let password_len = bytes.get_u16() as usize;
+			let password = String::from_utf8(bytes.copy_to_bytes(password_len).to_vec()).map_err(|e| {
+				StealthStreamPacketError::InvalidUtf8 {
+					source: e,
+					field: "password".to_string(),
+				}
+			})?;
 
-				Some(AuthData {
-					username,
-					hashed_password,
-				})
-			} else {
-				None
-			};
+			Some(AuthData { username, password })
+		} else {
+			None
+		};
 
 		Ok(Self {
 			version,
@@ -209,6 +204,20 @@ impl Display for ErrorData {
 }
 
 /* New Implementations */
+impl AuthData {
+	/// Note: For security purposes, the password should be hashed before being
+	/// passed to this function. The hash can then be verified on the server
+	/// side via the auth callback.
+	pub fn new(username: impl Into<String>, hashed_password: impl Into<String>) -> Self {
+		let (username, hashed_password) = (username.into(), hashed_password.into());
+
+		Self {
+			username,
+			password: hashed_password,
+		}
+	}
+}
+
 impl HandshakeData {
 	pub fn new(version: u8, should_compress: bool, namespace: &str, auth: Option<AuthData>) -> Self {
 		let namespace = namespace.to_string();
