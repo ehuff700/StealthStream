@@ -1,4 +1,5 @@
 use std::{
+	collections::HashMap,
 	net::{SocketAddr, ToSocketAddrs},
 	sync::{
 		atomic::{AtomicBool, Ordering},
@@ -19,7 +20,7 @@ use tokio_rustls::{TlsConnector, TlsStream};
 use tracing::{debug, error};
 use uuid::Uuid;
 
-use super::ClientBuilder;
+use super::{ClientBuilder, ClientMessageCallback};
 #[cfg(feature = "tls")]
 use crate::protocol::tls::{CertVerifier, ServerTlsStream};
 use crate::{
@@ -30,7 +31,6 @@ use crate::{
 		data::{AcknowledgeData, MessageData},
 		GoodbyeCodes, StealthStream, StealthStreamMessage, StealthStreamPacketError,
 	},
-	server::ClientMessageCallback,
 	StealthStreamResult,
 };
 
@@ -227,6 +227,8 @@ pub struct Client {
 	/// Custom event handler defined by the client for use in recieving messages
 	/// from the server.
 	event_handler: Arc<dyn ClientMessageCallback>,
+	/// Headers sent during the initial handshake.
+	headers: Option<HashMap<String, String>>,
 	/// Whether or not the client should compress the stream using LZ4.
 	should_compress: bool,
 	/// Whether or not the client should skip certificate validation.
@@ -251,7 +253,8 @@ impl Client {
 
 		self.inner = Some(Arc::new(inner));
 
-		HandshakeData::start_client_handshake(self, self.should_compress, namespace, auth).await?;
+		HandshakeData::start_client_handshake(self, self.should_compress, self.headers.clone(), namespace, auth)
+			.await?;
 		/* TODO: fix this
 		if let Some(Ok(_value)) = self.inner()?.receive().await {
 		} else {
@@ -394,6 +397,7 @@ impl From<ClientBuilder> for Client {
 			reconnect_interval: value.reconnect_interval,
 			reconnect_attempts: value.reconnect_attempts,
 			should_compress: value.should_compress,
+			headers: value.headers,
 			event_handler: value
 				.event_handler
 				.unwrap_or_else(|| ClientBuilder::default_event_handler()),

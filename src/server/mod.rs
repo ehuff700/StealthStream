@@ -37,16 +37,6 @@ impl<F> ServerMessageCallback for F where
 {
 }
 
-pub trait ClientMessageCallback: // TODO: move this somewhere else
-Fn(StealthStreamMessage, Arc<RawClient>) -> BoxedCallbackFuture + Sync + Send + 'static
-{
-}
-
-impl<F> ClientMessageCallback for F where
-	F: Fn(StealthStreamMessage, Arc<RawClient>) -> BoxedCallbackFuture + Sync + Send + 'static
-{
-}
-
 /// This trait is used by the server whenever a new connection is established.
 pub trait OpenCallback:
 	Fn(HandshakeData, Arc<RawClient>, Arc<InnerState>) -> BoxedCallbackFuture + Sync + Send + 'static

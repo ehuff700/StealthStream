@@ -60,6 +60,8 @@ pub enum StealthStreamPacketError {
 		source: std::string::FromUtf8Error,
 		field: String,
 	},
+	#[error("handshake contained invalid headers")]
+	InvalidHeaders,
 	#[error("packet contains arbitrary bytes: {0:#?}")]
 	ArbitraryBytes(Vec<u8>),
 	#[error(transparent)]
@@ -222,14 +224,13 @@ impl Decoder for StealthStreamCodec {
 				debug!("flag: {:?}", flag);
 			}
 
-			let message_id =
-				if opcode.is_data_frame()
-					&& matches!(flag, FrameFlags::Beginning | FrameFlags::Continuation | FrameFlags::End)
-				{
-					Some(FrameIdentifier::try_from(src)?)
-				} else {
-					None
-				};
+			let message_id = if opcode.is_data_frame()
+				&& matches!(flag, FrameFlags::Beginning | FrameFlags::Continuation | FrameFlags::End)
+			{
+				Some(FrameIdentifier::try_from(src)?)
+			} else {
+				None
+			};
 
 			#[cfg(test)]
 			debug!("message_id: {:?}", message_id);
@@ -534,8 +535,9 @@ mod tests {
 			.expect("couldn't send the frame :(");
 
 		let response = rx.recv().await;
-		assert!(response
-			.is_some_and(|v| v.is_err_and(|e| matches!(e, StealthStreamPacketError::ArbitraryEndFrame { .. }))));
+		assert!(
+			response.is_some_and(|v| v.is_err_and(|e| matches!(e, StealthStreamPacketError::ArbitraryEndFrame { .. })))
+		);
 
 		/* Send the Arbitrary Continuation Frame */
 		// Send the packet
@@ -549,8 +551,9 @@ mod tests {
 			.expect("couldn't send the frame :(");
 
 		let resp = rx.recv().await;
-		assert!(resp.is_some_and(|v| v
-			.is_err_and(|e| matches!(e, StealthStreamPacketError::ArbitraryContinuationFrame { .. }))));
+		assert!(resp.is_some_and(
+			|v| v.is_err_and(|e| matches!(e, StealthStreamPacketError::ArbitraryContinuationFrame { .. }))
+		));
 	}
 
 	#[tokio::test]

@@ -72,12 +72,14 @@ impl HandshakeData {
 
 	/// Sends the client handshake message to the server.
 	pub async fn start_client_handshake(
-		client: &Client, should_compress: bool, namespace: &str, auth: Option<AuthData>,
+		client: &Client, should_compress: bool, headers: Option<HashMap<String, String>>, namespace: &str,
+		auth: Option<AuthData>,
 	) -> ClientResult<()> {
 		client
 			.send(StealthStreamMessage::Handshake(HandshakeData::new(
 				PROTOCOL_VERSION,
 				should_compress,
+				headers,
 				namespace,
 				auth,
 			)))

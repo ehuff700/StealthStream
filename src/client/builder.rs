@@ -1,9 +1,9 @@
-use std::{sync::Arc, time::Duration};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use tracing::debug;
 
-use super::{Client, RawClient};
-use crate::{pin_callback, protocol::StealthStreamMessage, server::ClientMessageCallback};
+use super::{Client, ClientMessageCallback, RawClient};
+use crate::{pin_callback, protocol::StealthStreamMessage};
 
 pub struct ClientBuilder {
 	/// Whether or not the client should attempt to reconnect when disconnected.
@@ -30,6 +30,9 @@ pub struct ClientBuilder {
 	///
 	/// This will use lz4 internally to compress the stream if true.
 	pub(crate) should_compress: bool,
+
+	/// Headers which will be sent to the server during handshake time.
+	pub(crate) headers: Option<HashMap<String, String>>,
 	/// Simple boolean to indicate whether or not the client should skip
 	/// certificate validation. This should only be used for testing purposes
 	/// **AND IS NOT SAFE** for production use.
@@ -45,6 +48,7 @@ impl ClientBuilder {
 			reconnect_attempts: 10,
 			event_handler: None,
 			should_compress: false,
+			headers: None,
 			#[cfg(feature = "tls")]
 			skip_certificate_validation: false,
 		}
@@ -79,6 +83,20 @@ impl ClientBuilder {
 	/// stream using the LZ4 algorithm.
 	pub fn compress(mut self, should_compress: bool) -> Self {
 		self.should_compress = should_compress;
+		self
+	}
+
+	/// Adds new headers to be sent to the server during handshake time.
+	///
+	/// If this method has been called before, the new headers will be appended
+	/// to the current ones.
+	pub fn with_headers(mut self, handshake_headers: HashMap<String, String>) -> Self {
+		self.headers = if let Some(mut headers) = self.headers {
+			headers.extend(handshake_headers);
+			Some(headers)
+		} else {
+			Some(handshake_headers)
+		};
 		self
 	}
 

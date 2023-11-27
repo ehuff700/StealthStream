@@ -28,7 +28,8 @@ impl Server {
 	/// Used internally by the ServerBuilder to create a new [Server] instance.
 	pub(super) fn new(
 		listener: TcpListener, address: SocketAddr, poke_delay: u64, handshake_timeout: u64,
-		namespace_handlers: HashMap<String, Namespace>, state: Arc<InnerState>, #[cfg(feature = "tls")] server_config: Option<ServerConfig>,
+		namespace_handlers: HashMap<String, Namespace>, state: Arc<InnerState>,
+		#[cfg(feature = "tls")] server_config: Option<ServerConfig>,
 	) -> Self {
 		#[cfg(feature = "signals")] // TODO: implement this properly or not at all?
 		tokio::task::spawn({
@@ -91,13 +92,8 @@ impl Server {
 	/// creating a poke task to keep the connection alive.
 	async fn handle_client(&self, client: Arc<RawClient>) {
 		let timeout = self.handshake_timeout;
-		let handshake_result = HandshakeData::start_server_handshake(
-			&client,
-			&self.namespace_handlers,
-			&self.state,
-			timeout,
-		)
-		.await;
+		let handshake_result =
+			HandshakeData::start_server_handshake(&client, &self.namespace_handlers, &self.state, timeout).await;
 		let state = &self.state;
 		match handshake_result {
 			Ok(data) => {
@@ -331,7 +327,7 @@ mod tests {
 		let mut raw_stream = TcpStream::connect(server.address())
 			.await
 			.expect("couldn't connect to server");
-		let handshake = StealthStreamMessage::Handshake(HandshakeData::new(1, false, "/", None));
+		let handshake = StealthStreamMessage::Handshake(HandshakeData::new(1, false, None, "/", None));
 		let mut test = handshake.to_packet().unwrap();
 
 		let bytes: Vec<u8> = test.pop().unwrap().into();

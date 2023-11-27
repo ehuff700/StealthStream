@@ -1,4 +1,4 @@
-use std::fmt::Display;
+use std::{collections::HashMap, fmt::Display};
 
 use bytes::{Buf, Bytes};
 use derive_getters::Getters;
@@ -21,6 +21,7 @@ pub struct HandshakeData {
 	pub(crate) should_compress: bool,
 	pub(crate) namespace: String,
 	pub(crate) auth: Option<AuthData>,
+	pub(crate) headers: Option<HashMap<String, String>>,
 }
 
 impl StealthStreamPacketParser for HandshakeData {
@@ -28,6 +29,18 @@ impl StealthStreamPacketParser for HandshakeData {
 		let mut handshake = Vec::new();
 		handshake.push(self.version);
 		handshake.push(self.should_compress as u8);
+
+		// Headers
+		if let Some(headers) = &self.headers {
+			handshake.push(1); // Headers present
+			let headers_bytes = serde_json::to_string(headers).unwrap();
+			let headers_len = headers_bytes.len() as u16;
+
+			handshake.extend(headers_len.to_be_bytes());
+			handshake.extend(headers_bytes.as_bytes());
+		} else {
+			handshake.push(0); // Headers not present
+		}
 
 		// Namespace
 		let namespace_bytes = self.namespace.as_bytes();
@@ -70,6 +83,16 @@ impl StealthStreamPacketParser for HandshakeData {
 		}
 
 		let should_compress = bytes.get_u8() != 0;
+		let headers = if bytes.get_u8() == 1 {
+			let headers_len = bytes.get_u16() as usize;
+			let slice = bytes.copy_to_bytes(headers_len);
+			Some(
+				serde_json::from_slice::<HashMap<String, String>>(&slice.to_vec())
+					.map_err(|_| StealthStreamPacketError::InvalidHeaders)?,
+			)
+		} else {
+			None
+		};
 
 		let namespace_len = bytes.get_u16() as usize;
 		let namespace = String::from_utf8(bytes.copy_to_bytes(namespace_len).to_vec()).map_err(|e| {
@@ -105,6 +128,7 @@ impl StealthStreamPacketParser for HandshakeData {
 			version,
 			should_compress,
 			namespace,
+			headers,
 			auth,
 		})
 	}
@@ -219,11 +243,15 @@ impl AuthData {
 }
 
 impl HandshakeData {
-	pub fn new(version: u8, should_compress: bool, namespace: &str, auth: Option<AuthData>) -> Self {
+	pub fn new(
+		version: u8, should_compress: bool, headers: Option<HashMap<String, String>>, namespace: &str,
+		auth: Option<AuthData>,
+	) -> Self {
 		let namespace = namespace.to_string();
 		Self {
 			version,
 			should_compress,
+			headers,
 			namespace,
 			auth,
 		}

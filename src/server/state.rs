@@ -40,7 +40,7 @@ impl InnerState {
 		self.data.insert(TypeId::of::<T>(), Box::new(state.into_inner()));
 	}
 
-	// Retrieves an item from the inner state object.
+	/// Retrieves an item from the inner state object.
 	pub fn get<T>(&self) -> Option<&T>
 	where
 		T: Send + Sync + 'static,
