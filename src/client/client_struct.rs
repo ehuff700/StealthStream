@@ -1,5 +1,6 @@
 use std::{
 	collections::HashMap,
+	fmt::Display,
 	net::{SocketAddr, ToSocketAddrs},
 	sync::{
 		atomic::{AtomicBool, Ordering},
@@ -45,6 +46,15 @@ pub enum AddressContext {
 	ServerAddress(SocketAddr),
 	/// Represents the address of the client as seen from the server side.
 	ClientAddress(SocketAddr),
+}
+
+impl Display for AddressContext {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		match self {
+			Self::ServerAddress(addr) => write!(f, "{}", addr),
+			Self::ClientAddress(addr) => write!(f, "{}", addr),
+		}
+	}
 }
 
 #[derive(Debug, Clone)]
