@@ -11,6 +11,7 @@ use super::{AuthCallback, Namespace, ServerResult};
 use crate::{
 	client::RawClient,
 	protocol::{constants::INVALID_HANDSHAKE, control::HandshakeData, StealthStreamMessage, StealthStreamPacketError},
+	server::state::InnerState,
 };
 
 pub struct Server {
@@ -20,6 +21,7 @@ pub struct Server {
 	handshake_timeout: u64,
 	auth_handler: Arc<dyn AuthCallback>,
 	namespace_handlers: HashMap<String, Namespace>,
+	state: Arc<InnerState>,
 	#[cfg(feature = "tls")]
 	tls_config: Arc<ServerConfig>,
 }
@@ -27,7 +29,7 @@ impl Server {
 	/// Used internally by the ServerBuilder to create a new [Server] instance.
 	pub(super) fn new(
 		listener: TcpListener, address: SocketAddr, poke_delay: u64, handshake_timeout: u64,
-		auth_handler: Arc<dyn AuthCallback>, namespace_handlers: HashMap<String, Namespace>,
+		auth_handler: Arc<dyn AuthCallback>, namespace_handlers: HashMap<String, Namespace>, state: Arc<InnerState>,
 		#[cfg(feature = "tls")] server_config: Option<ServerConfig>,
 	) -> Self {
 		#[cfg(feature = "signals")] // TODO: implement this properly or not at all?
@@ -46,6 +48,7 @@ impl Server {
 			handshake_timeout,
 			auth_handler,
 			namespace_handlers,
+			state,
 			#[cfg(feature = "tls")]
 			tls_config: Arc::new(server_config.unwrap()),
 		}
@@ -66,14 +69,13 @@ impl Server {
 					debug!("Accepted connection from {:?}", address);
 
 					#[cfg(feature = "tls")]
-					let tls_stream =
-						match acceptor.accept(tcp_stream).await {
-							Ok(tls_stream) => tls_stream,
-							Err(e) => {
-								error!("Error accepting TLS connection: {:?}", e);
-								continue;
-							},
-						};
+					let tls_stream = match acceptor.accept(tcp_stream).await {
+						Ok(tls_stream) => tls_stream,
+						Err(e) => {
+							error!("Error accepting TLS connection: {:?}", e);
+							continue;
+						},
+					};
 
 					#[cfg(not(feature = "tls"))]
 					let client = Arc::new(RawClient::from_stream(tcp_stream, address));
@@ -92,9 +94,15 @@ impl Server {
 	/// creating a poke task to keep the connection alive.
 	async fn handle_client(&self, client: Arc<RawClient>) {
 		let timeout = self.handshake_timeout;
-		let handshake_result =
-			HandshakeData::start_server_handshake(&client, &self.namespace_handlers, &self.auth_handler, timeout).await;
-
+		let handshake_result = HandshakeData::start_server_handshake(
+			&client,
+			&self.namespace_handlers,
+			&self.auth_handler,
+			&self.state,
+			timeout,
+		)
+		.await;
+		let state = &self.state;
 		match handshake_result {
 			Ok(data) => {
 				let namespace = data.namespace.to_string();
@@ -105,10 +113,9 @@ impl Server {
 					.get(&namespace)
 					.unwrap_or_else(|| panic!("No callbacks found for namespace: {}", namespace));
 
-				tokio::task::spawn((callbacks.handlers.on_open.clone())(data, client.clone()));
+				tokio::task::spawn((callbacks.handlers.on_open.clone())(data, client.clone(), state.clone()));
 
-				let delay = self.poke_delay;
-				tokio::task::spawn(Self::poke_task(client.clone(), delay));
+				tokio::task::spawn(Self::poke_task(client.clone(), self.poke_delay.clone()));
 
 				let (write_tx, write_rx) = mpsc::channel::<StealthStreamMessage>(100);
 				Self::spawn_read_task(&client, write_tx);
@@ -183,24 +190,27 @@ impl Server {
 	/// send them to the callback/event handler.
 	fn spawn_write_task(&self, client: &Arc<RawClient>, mut rx: mpsc::Receiver<StealthStreamMessage>, namespace: &str) {
 		let retrieved = self.namespace_handlers.get(namespace).unwrap();
-		tokio::task::spawn({
-			let write_client = client.clone();
-			let close_callback = retrieved.handlers.on_close.clone();
-			let normal_callback = retrieved.handlers.on_message.clone();
 
-			async move {
-				while let Some(message) = rx.recv().await {
-					tokio::task::spawn({
-						let (close_callback, normal_callback) = (close_callback.clone(), normal_callback.clone());
-						let write_client_cloned = write_client.clone();
-						async move {
-							match message {
-								StealthStreamMessage::Goodbye(data) => close_callback(data, write_client_cloned).await,
-								_ => normal_callback(message, write_client_cloned).await,
-							}
+		let write_client = client.clone();
+		let close_callback = retrieved.handlers.on_close.clone();
+		let normal_callback = retrieved.handlers.on_message.clone();
+		let state = self.state.clone();
+
+		tokio::task::spawn(async move {
+			while let Some(message) = rx.recv().await {
+				tokio::task::spawn({
+					let (close_callback, normal_callback) = (close_callback.clone(), normal_callback.clone());
+					let write_client_cloned = write_client.clone();
+					let state_cloned = state.clone();
+					async move {
+						match message {
+							StealthStreamMessage::Goodbye(data) => {
+								close_callback(data, write_client_cloned, state_cloned).await
+							},
+							_ => normal_callback(message, write_client_cloned, state_cloned).await,
 						}
-					});
-				}
+					}
+				});
 			}
 		});
 	}
@@ -221,12 +231,12 @@ mod tests {
 		client::ClientBuilder,
 		pin_callback,
 		protocol::{control::HandshakeData, data::MessageData, StealthStreamMessage},
-		server::{MessageCallback, ServerBuilder},
+		server::{ServerBuilder, ServerMessageCallback},
 	};
 
 	macro_rules! server_client_setup {
 		() => {{
-			let test: Option<Box<dyn MessageCallback>> = None;
+			let test: Option<Box<dyn ServerMessageCallback>> = None;
 			let server = basic_server_setup(test).await;
 
 			let mut client = ClientBuilder::default();
@@ -273,7 +283,7 @@ mod tests {
 
 	async fn basic_server_setup<T>(callback: Option<T>) -> Arc<Server>
 	where
-		T: MessageCallback,
+		T: ServerMessageCallback,
 	{
 		let mut rng = rand::thread_rng();
 		let random_number: u16 = rng.gen_range(1000..10000);
@@ -312,7 +322,7 @@ mod tests {
 		.init();*/
 
 		let (server, c) = server_client_setup!({
-			move |recieved_message, _| {
+			move |recieved_message, _, _| {
 				let tx = tx.clone();
 				info!("Recieved message: {:?}", recieved_message);
 				pin_callback!({

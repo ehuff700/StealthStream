@@ -22,7 +22,7 @@ async fn main() -> Result<()> {
 	#[allow(unused_mut)]
 	let mut server = ServerBuilder::default()
 		.address("0.0.0.0".parse::<IpAddr>().unwrap())
-		.onmessage(|message_type, client| {
+		.onmessage(|message_type, client, _| {
 			pin_callback!({
 				callback_function(message_type, client).await;
 			})

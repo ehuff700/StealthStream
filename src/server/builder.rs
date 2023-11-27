@@ -19,11 +19,16 @@ use tokio::net::TcpListener;
 use tokio_rustls::rustls::ServerConfig;
 
 use super::{
-	server_struct::Server, AuthCallback, CloseCallback, MessageCallback, Namespace, OpenCallback, ServerResult,
+	server_struct::Server, AuthCallback, CloseCallback, Namespace, OpenCallback, ServerMessageCallback, ServerResult,
 };
 #[cfg(feature = "tls")]
 use crate::errors::Error;
-use crate::{client::RawClient, pin_auth_callback, protocol::control::AuthData};
+use crate::{
+	client::RawClient,
+	pin_auth_callback,
+	protocol::control::AuthData,
+	server::state::{InnerState, State},
+};
 
 /// Utility Struct to build a [Server] as needed
 pub struct ServerBuilder {
@@ -51,6 +56,7 @@ pub struct ServerBuilder {
 	/// At the very minimum, by default this will have one entry to handle the
 	/// root "/" namespace.
 	namespace_event_handlers: HashMap<String, Namespace>,
+	state: InnerState,
 	#[cfg(feature = "tls")]
 	/// The path to the TLS certificate.
 	cert_file_path: Option<PathBuf>,
@@ -74,6 +80,7 @@ impl ServerBuilder {
 			handshake_timeout: 2000,
 			auth_callback: None,
 			namespace_event_handlers,
+			state: InnerState::default(),
 			#[cfg(feature = "tls")]
 			cert_file_path: None,
 			#[cfg(feature = "tls")]
@@ -113,7 +120,7 @@ impl ServerBuilder {
 	/// Sets the event handler for all incoming [StealthStreamMessage]s to the
 	/// root namespace, with the exception of handshakes (those go to open) and
 	/// goodbyes (those go to close)
-	pub fn onmessage(mut self, event_handler: impl MessageCallback) -> Self {
+	pub fn onmessage(mut self, event_handler: impl ServerMessageCallback) -> Self {
 		let root = self.namespace_event_handlers.get_mut("/").unwrap();
 		root.handlers.on_message = Arc::new(event_handler);
 		self
@@ -141,6 +148,18 @@ impl ServerBuilder {
 		self
 	}
 
+	/// Adds a new [State] object to the server.
+	///
+	/// This method can be used to store any objects that need to be persisted
+	/// during the lifetime of the server.
+	pub fn with_state<T>(mut self, state: State<T>) -> Self
+	where
+		T: Send + Sync + 'static,
+	{
+		self.state.insert(state);
+		self
+	}
+
 	/// Sets the file path location to the TLS certificate
 	#[cfg(feature = "tls")]
 	#[must_use]
@@ -161,6 +180,7 @@ impl ServerBuilder {
 		let address = SocketAddr::new(self.address, self.port);
 		let listener = TcpListener::bind(address).await?;
 		let auth_callback = self.auth_callback.unwrap_or(Self::default_auth_callback());
+		let inner_state = Arc::new(self.state);
 		#[cfg(feature = "tls")]
 		{
 			let cert_file_path = self
@@ -190,7 +210,9 @@ impl ServerBuilder {
 				SocketAddr::new(self.address, self.port),
 				self.poke_delay,
 				self.handshake_timeout,
-				namespace_handlers,
+				auth_callback,
+				self.namespace_event_handlers,
+				inner_state,
 				Some(config),
 			))
 		}
@@ -203,12 +225,13 @@ impl ServerBuilder {
 				self.handshake_timeout,
 				auth_callback,
 				self.namespace_event_handlers,
+				inner_state,
 			))
 		}
 	}
 
 	fn default_auth_callback() -> Arc<dyn AuthCallback> {
-		let handler = |_: &AuthData, _: Arc<RawClient>| pin_auth_callback!({ Ok(true) });
+		let handler = |_: &AuthData, _: Arc<RawClient>, _: Arc<InnerState>| pin_auth_callback!({ Ok(true) });
 		Arc::new(handler)
 	}
 }

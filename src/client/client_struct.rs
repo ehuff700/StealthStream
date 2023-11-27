@@ -28,9 +28,10 @@ use crate::{
 		control::{AuthData, HandshakeData},
 		GoodbyeCodes, StealthStream, StealthStreamMessage, StealthStreamPacketError,
 	},
-	server::MessageCallback,
+	server::ClientMessageCallback,
 	StealthStreamResult,
 };
+
 pub type ClientResult<T> = std::result::Result<T, ClientErrors>;
 
 #[derive(Debug, Clone)]
@@ -208,7 +209,7 @@ pub struct Client {
 	pub(crate) session_id: Option<Uuid>,
 	/// Custom event handler defined by the client for use in recieving messages
 	/// from the server.
-	event_handler: Arc<dyn MessageCallback>,
+	event_handler: Arc<dyn ClientMessageCallback>,
 	/// Whether or not the client should compress the stream using LZ4.
 	should_compress: bool,
 	/// Whether or not the client should skip certificate validation.
@@ -280,7 +281,7 @@ impl Client {
 	/// Spawns a blocking loop which listens for incoming messages from the
 	/// server.
 	///
-	/// While the client is connected, it will recieve messages from the server
+	/// While the client is connected, it will receive messages from the server
 	/// and call the event handler of this client with the message.
 	pub async fn listen(&self) -> StealthStreamResult<()> {
 		let inner = self.inner()?;
@@ -340,7 +341,9 @@ impl Client {
 		if let Some(inner) = self.inner.as_ref() {
 			Ok(inner.clone())
 		} else {
-			Err(ClientErrors::ConnectionError(anyhow!("Client is currently not connected").into()))
+			Err(ClientErrors::ConnectionError(
+				anyhow!("Client is currently not connected").into(),
+			))
 		}
 	}
 }
@@ -378,12 +381,12 @@ mod tests {
 		errors::ClientErrors,
 		pin_callback,
 		protocol::{data::MessageData, StealthStreamMessage, StealthStreamPacket, StealthStreamPacketError},
-		server::{MessageCallback, Server, ServerBuilder},
+		server::{Server, ServerBuilder, ServerMessageCallback},
 	};
 
 	macro_rules! server_client_setup1 {
 		() => {{
-			let server = basic_server_setup(|_, _| pin_callback!({})).await;
+			let server = basic_server_setup(|_, _, _| pin_callback!({})).await;
 			#[cfg(not(feature = "tls"))]
 			let mut client = ClientBuilder::default().build();
 
@@ -429,7 +432,7 @@ mod tests {
 
 	async fn basic_server_setup<T>(callback: T) -> Arc<Server>
 	where
-		T: MessageCallback,
+		T: ServerMessageCallback,
 	{
 		let mut rng = rand::thread_rng();
 		let random_number: u16 = rng.gen_range(1000..10000);
@@ -466,8 +469,7 @@ mod tests {
 
 		// Assert that messages can no longer be sent after disconnect.
 		let result = client.send(StealthStreamMessage::Heartbeat).await;
-		assert!(result
-			.is_err_and(|e| matches!(e, ClientErrors::InvalidPacket(StealthStreamPacketError::StreamClosed))));
+		assert!(result.is_err_and(|e| matches!(e, ClientErrors::InvalidPacket(StealthStreamPacketError::StreamClosed))));
 
 		drop(server);
 	}
@@ -482,14 +484,14 @@ mod tests {
 	}
 
 	#[tokio::test]
-	async fn test_basic_recieve() {
+	async fn test_basic_receive() {
 		//tracing_subscriber::fmt().with_max_level(LevelFilter::DEBUG).init();
 
 		let (tx, mut rx) = tokio::sync::mpsc::channel(1);
 		let test_txt = "Test Message!";
 
 		let (_, client) = server_client_setup1!({
-			move |recieved_message, _| {
+			move |recieved_message, _, _| {
 				let tx = tx.clone();
 				pin_callback!({
 					tx.send(recieved_message).await.unwrap();
@@ -513,7 +515,7 @@ mod tests {
 		let (tx, mut rx) = tokio::sync::mpsc::channel(10);
 
 		let (_, client) = server_client_setup1!({
-			move |recieved_message, _| {
+			move |recieved_message, _, _| {
 				let tx = tx.clone();
 				info!("Recieved message: {}", recieved_message);
 				pin_callback!({
@@ -548,7 +550,7 @@ mod tests {
 		let (tx, mut rx) = tokio::sync::mpsc::channel(10);
 
 		let (_, client) = server_client_setup1!({
-			move |recieved_message, _| {
+			move |recieved_message, _, _| {
 				let tx = tx.clone();
 				info!("Recieved message: {}", recieved_message);
 				pin_callback!({
@@ -569,7 +571,6 @@ mod tests {
 		/* Test content overflow */
 		let gen = generate_long_string(1024 * 16);
 		let result = client.send(StealthStreamMessage::create_utf8_message(&gen)).await;
-		println!("result: {:?}", result);
 		assert!(result.is_err_and(|e| matches!(
 			e,
 			ClientErrors::InvalidPacket(StealthStreamPacketError::MessageContentsOverflowed(_))

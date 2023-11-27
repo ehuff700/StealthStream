@@ -11,13 +11,13 @@ use super::{
 use crate::{
 	client::{Client, ClientResult, RawClient},
 	errors::{Error, ServerErrors},
-	server::{AuthCallback, Namespace, ServerResult},
+	server::{state::InnerState, AuthCallback, Namespace, ServerResult},
 };
 
 impl HandshakeData {
 	pub async fn start_server_handshake(
 		client: &Arc<RawClient>, namespace_handlers: &HashMap<String, Namespace>, auth_handler: &Arc<dyn AuthCallback>,
-		handshake_timeout: u64,
+		state: &Arc<InnerState>, handshake_timeout: u64,
 	) -> ServerResult<HandshakeData> {
 		let configured_timeout = Duration::from_millis(handshake_timeout);
 
@@ -38,7 +38,7 @@ impl HandshakeData {
 					if namespace.is_privileged {
 						match data.auth.as_ref() {
 							Some(auth) => {
-								match (auth_handler)(auth, client.clone()).await {
+								match (auth_handler)(auth, client.clone(), state.clone()).await {
 									Ok(true) => {
 										debug!("Successfully authenticated client {:?}", client.peer_address());
 									},
