@@ -224,7 +224,7 @@ impl RawClient {
 	///
 	/// The state can be used particularly in server-side code to track the
 	/// state of the client.
-	pub async fn state(&self) -> &Arc<InnerState> { &self.state }
+	pub fn state(&self) -> &Arc<InnerState> { &self.state }
 }
 
 #[derive(Clone)]
