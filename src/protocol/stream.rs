@@ -9,8 +9,11 @@ use tokio_rustls::TlsStream;
 use tokio_util::codec::{FramedRead, FramedWrite};
 #[cfg(test)]
 use tracing::debug;
+use uuid::Uuid;
 
-use super::{StealthStreamCodec, StealthStreamMessage, StealthStreamPacket, StealthStreamPacketError};
+use super::{
+	data::AcknowledgeData, StealthStreamCodec, StealthStreamMessage, StealthStreamPacket, StealthStreamPacketError,
+};
 
 #[derive(Debug)]
 #[cfg(not(feature = "tls"))]
@@ -82,6 +85,27 @@ impl StealthStream {
 		} else {
 			None
 		}
+	}
+
+	/// Waits for an acknowledgement packet from the underlying stream
+	pub async fn wait_for_ack(&self, ack_id: Uuid) -> Result<Option<AcknowledgeData>, StealthStreamPacketError> {
+		let mut reader = self.reader.lock().await;
+
+		while let Some(result) = reader.next().await {
+			match result {
+				Ok(packet) => {
+					let message = StealthStreamMessage::from_packet(packet).await?;
+					if let StealthStreamMessage::Acknowledge(ack) = message {
+						if ack.ack_id == ack_id {
+							return Ok(Some(ack));
+						}
+					}
+				},
+				Err(e) => return Err(e),
+			}
+		}
+
+		Ok(None)
 	}
 
 	/// Shuts down the underlying stream.

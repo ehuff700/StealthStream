@@ -2,13 +2,13 @@ use std::fmt::Display;
 
 use super::{
 	control::{ErrorData, GoodbyeData, HandshakeData},
-	data::MessageData,
+	data::{AcknowledgeData, MessageData},
 	StealthStreamPacketParser,
 };
 use crate::protocol::{
 	constants::{
-		ERROR_OPCODE, GOODBYE_OPCODE, GRACEFUL, HANDSHAKE_OPCODE, HEARTBEAT_OPCODE, INVALID_HANDSHAKE, MESSAGE_OPCODE,
-		SERVER_RESTARTING, UNKNOWN,
+		ACKNOWLEDGEMENT_OPCODE, ERROR_OPCODE, GOODBYE_OPCODE, GRACEFUL, HANDSHAKE_OPCODE, HEARTBEAT_OPCODE,
+		INVALID_HANDSHAKE, MESSAGE_OPCODE, SERVER_RESTARTING, UNKNOWN,
 	},
 	framing::{FrameFlags, FrameOpcodes},
 	StealthStreamPacket, StealthStreamPacketError,
@@ -18,10 +18,11 @@ use crate::protocol::{
 /// An overarching enum repsenting the different types of messages that can be
 /// sent over a StealthStream.
 pub enum StealthStreamMessage {
-	Handshake(HandshakeData), // 0x0
-	Heartbeat,                // 0x1
-	Message(MessageData),     // 0x2
-	Goodbye(GoodbyeData),     // 0x3
+	Handshake(HandshakeData),
+	Acknowledge(AcknowledgeData),
+	Heartbeat,
+	Message(MessageData),
+	Goodbye(GoodbyeData),
 	Error(ErrorData),
 }
 
@@ -34,6 +35,7 @@ impl StealthStreamMessage {
 			MESSAGE_OPCODE => StealthStreamMessage::Message(MessageData::from_packet(packet)?),
 			GOODBYE_OPCODE => StealthStreamMessage::Goodbye(GoodbyeData::from_packet(packet)?),
 			ERROR_OPCODE => StealthStreamMessage::Error(ErrorData::from_packet(packet)?),
+			ACKNOWLEDGEMENT_OPCODE => StealthStreamMessage::Acknowledge(AcknowledgeData::from_packet(packet)?),
 			_ => unreachable!(),
 		};
 
@@ -56,6 +58,7 @@ impl StealthStreamMessage {
 			StealthStreamMessage::Message(message) => message.to_packet()?,
 			StealthStreamMessage::Goodbye(goodbye) => goodbye.to_packet()?,
 			StealthStreamMessage::Error(error) => error.to_packet()?,
+			StealthStreamMessage::Acknowledge(ack_data) => ack_data.to_packet()?,
 		};
 
 		Ok(packet)
@@ -75,13 +78,13 @@ impl StealthStreamMessage {
 
 	/// Utility function which creates a utf-8 binary message from a string.
 	pub fn create_utf8_message(message: &str) -> Self {
-		let mdata = MessageData::new(message.as_bytes(), true);
+		let mdata = MessageData::new(message.as_bytes(), true, false);
 		Self::Message(mdata)
 	}
 
 	/// Utility function which creates a non-utf8 binary message.
 	pub fn create_binary_message(message: &[u8]) -> Self {
-		let mdata = MessageData::new(message, false);
+		let mdata = MessageData::new(message, false, false);
 		Self::Message(mdata)
 	}
 
@@ -89,6 +92,14 @@ impl StealthStreamMessage {
 	pub fn create_error_message(code: u8, reason: &str) -> Self {
 		let edata = ErrorData::new(code, reason.to_string());
 		Self::Error(edata)
+	}
+
+	/// Determines whether or not the boolean needs an acknowledgement.
+	pub fn needs_ack(&self) -> bool {
+		match self {
+			StealthStreamMessage::Message(data) => data.ack_id().is_some(),
+			_ => false,
+		}
 	}
 }
 
@@ -100,6 +111,7 @@ impl Display for StealthStreamMessage {
 			StealthStreamMessage::Message(message) => message.fmt(f),
 			StealthStreamMessage::Goodbye(goodbye) => goodbye.fmt(f),
 			StealthStreamMessage::Error(error) => error.fmt(f),
+			StealthStreamMessage::Acknowledge(ack) => ack.fmt(f),
 		}
 	}
 }

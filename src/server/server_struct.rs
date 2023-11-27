@@ -7,7 +7,7 @@ use tokio::{net::TcpListener, signal, sync::mpsc};
 use tokio_rustls::TlsAcceptor;
 use tracing::{debug, error, info};
 
-use super::{AuthCallback, Namespace, ServerResult};
+use super::{Namespace, ServerResult};
 use crate::{
 	client::RawClient,
 	protocol::{constants::INVALID_HANDSHAKE, control::HandshakeData, StealthStreamMessage, StealthStreamPacketError},
@@ -19,7 +19,6 @@ pub struct Server {
 	address: SocketAddr,
 	poke_delay: u64,
 	handshake_timeout: u64,
-	auth_handler: Arc<dyn AuthCallback>,
 	namespace_handlers: HashMap<String, Namespace>,
 	state: Arc<InnerState>,
 	#[cfg(feature = "tls")]
@@ -29,8 +28,7 @@ impl Server {
 	/// Used internally by the ServerBuilder to create a new [Server] instance.
 	pub(super) fn new(
 		listener: TcpListener, address: SocketAddr, poke_delay: u64, handshake_timeout: u64,
-		auth_handler: Arc<dyn AuthCallback>, namespace_handlers: HashMap<String, Namespace>, state: Arc<InnerState>,
-		#[cfg(feature = "tls")] server_config: Option<ServerConfig>,
+		namespace_handlers: HashMap<String, Namespace>, state: Arc<InnerState>, #[cfg(feature = "tls")] server_config: Option<ServerConfig>,
 	) -> Self {
 		#[cfg(feature = "signals")] // TODO: implement this properly or not at all?
 		tokio::task::spawn({
@@ -46,7 +44,6 @@ impl Server {
 			address,
 			poke_delay,
 			handshake_timeout,
-			auth_handler,
 			namespace_handlers,
 			state,
 			#[cfg(feature = "tls")]
@@ -97,7 +94,6 @@ impl Server {
 		let handshake_result = HandshakeData::start_server_handshake(
 			&client,
 			&self.namespace_handlers,
-			&self.auth_handler,
 			&self.state,
 			timeout,
 		)
@@ -354,7 +350,7 @@ mod tests {
 		assert!(raw_stream_result.is_err(), "Somehow recieved a successful message?");
 
 		/* Test Successful Recieve */
-		let packet = StealthStreamMessage::Message(MessageData::new(b"test", false));
+		let packet = StealthStreamMessage::Message(MessageData::new(b"test", false, false));
 		c.send(packet).await.expect("error sending message");
 
 		let received = rx.recv().await;

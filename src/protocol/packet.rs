@@ -60,6 +60,8 @@ pub enum StealthStreamPacketError {
 		source: std::string::FromUtf8Error,
 		field: String,
 	},
+	#[error("packet contains arbitrary bytes: {0:#?}")]
+	ArbitraryBytes(Vec<u8>),
 	#[error(transparent)]
 	HandshakeError(#[from] HandshakeErrors),
 	#[error("error reading from the underlying stream: {0}")]

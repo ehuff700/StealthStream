@@ -16,7 +16,7 @@ use crate::{
 
 impl HandshakeData {
 	pub async fn start_server_handshake(
-		client: &Arc<RawClient>, namespace_handlers: &HashMap<String, Namespace>, auth_handler: &Arc<dyn AuthCallback>,
+		client: &Arc<RawClient>, namespace_handlers: &HashMap<String, Namespace>,
 		state: &Arc<InnerState>, handshake_timeout: u64,
 	) -> ServerResult<HandshakeData> {
 		let configured_timeout = Duration::from_millis(handshake_timeout);
@@ -36,9 +36,10 @@ impl HandshakeData {
 						.ok_or_else(|| ServerErrors::from(HandshakeErrors::NamespaceNotFound(requested.to_string())))?;
 
 					if namespace.is_privileged {
+						let auth_handler = &namespace.handlers.on_auth;
 						match data.auth.as_ref() {
 							Some(auth) => {
-								match (auth_handler)(auth, client.clone(), state.clone()).await {
+								match auth_handler(auth.clone(), client.clone(), state.clone()).await {
 									Ok(true) => {
 										debug!("Successfully authenticated client {:?}", client.peer_address());
 									},

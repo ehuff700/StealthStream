@@ -24,7 +24,8 @@ pub type ServerResult<T> = Result<T, LibraryError>;
 
 /// Type alias used to indicate a pinned and boxed future.
 pub type BoxedCallbackFuture = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
-pub type BoxedBoolFuture = Pin<Box<dyn Future<Output = Result<bool, Box<dyn std::error::Error>>> + Send + 'static>>;
+pub type BoxedBoolFuture =
+	Pin<Box<dyn Future<Output = Result<bool, Box<dyn std::error::Error + Send + 'static>>> + Send + 'static>>;
 
 /// This trait is used by the [Server] and [Client] to handle incoming messages.
 pub trait ServerMessageCallback: // TODO: move this somewhere else

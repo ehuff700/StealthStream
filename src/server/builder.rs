@@ -141,6 +141,17 @@ impl ServerBuilder {
 		self
 	}
 
+	/// Defines an event handler for all authentication attempts to the root
+	/// namespace.
+	///
+	/// Returning `Ok(true)` in the callback means successful auth, `Ok(false)`
+	/// means failed authentication, and an `Err(e)` means there was an error.
+	pub fn onauth(mut self, auth_handler: impl AuthCallback) -> Self {
+		let root = self.namespace_event_handlers.get_mut("/").unwrap();
+		root.handlers.on_auth = Arc::new(auth_handler);
+		self
+	}
+
 	/// Adds a new namespace to the server.
 	pub fn with_namespace(mut self, namespace: Namespace) -> Self {
 		self.namespace_event_handlers
