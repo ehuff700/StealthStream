@@ -31,10 +31,11 @@ use crate::{
 		data::{AcknowledgeData, MessageData},
 		GoodbyeCodes, StealthStream, StealthStreamMessage, StealthStreamPacketError,
 	},
+	server::InnerState,
 	StealthStreamResult,
 };
 
-pub type ClientResult<T> = std::result::Result<T, ClientErrors>;
+pub type ClientResult<T> = Result<T, ClientErrors>;
 
 #[derive(Debug, Clone)]
 /// Used to store the address context of a [SocketAddr]
@@ -52,6 +53,9 @@ pub struct RawClient {
 	raw_socket: Arc<StealthStream>,
 	/// An atomic boolean used to track the client's connection state.
 	connection_state: Arc<AtomicBool>,
+	/// An optional state object that can be used by the server to track the
+	/// state of the client.
+	state: Arc<InnerState>,
 	/// The address context of the remote peer.
 	///
 	/// This value will be [AddressContext::ClientAddress] when viewed server
@@ -90,10 +94,12 @@ impl RawClient {
 			let abstracted = TlsStream::from(tls_stream);
 			let raw_socket: Arc<StealthStream> = Arc::new(abstracted.into());
 			let connection_state = Arc::new(AtomicBool::new(true));
+			let state = Arc::new(InnerState::default());
 
 			Ok(Self {
 				raw_socket,
 				connection_state,
+				state,
 				peer_address,
 			})
 		}
@@ -102,10 +108,12 @@ impl RawClient {
 		{
 			let raw_socket = Arc::new(TcpStream::connect(address).await?.into());
 			let connection_state = Arc::new(AtomicBool::new(true));
+			let state = Arc::new(InnerState::default());
 
 			Ok(Self {
 				raw_socket,
 				connection_state,
+				state,
 				peer_address,
 			})
 		}
@@ -118,10 +126,12 @@ impl RawClient {
 	pub(crate) fn from_stream(socket: TcpStream, address: SocketAddr) -> Self {
 		let connection_state = Arc::new(AtomicBool::new(true));
 		let raw_socket = Arc::new(socket.into());
+		let state = Arc::new(InnerState::default());
 
 		Self {
 			raw_socket,
 			peer_address: AddressContext::ClientAddress(address),
+			state,
 			connection_state,
 		}
 	}
@@ -135,11 +145,13 @@ impl RawClient {
 
 		let connection_state = Arc::new(AtomicBool::new(true));
 		let raw_socket = Arc::new(TlsStreamEnum::from(socket).into());
+		let state = Arc::new(InnerState::default());
 
 		Self {
 			raw_socket,
 			peer_address: AddressContext::ClientAddress(address),
 			connection_state,
+			state,
 		}
 	}
 
@@ -155,6 +167,8 @@ impl RawClient {
 		}
 	}
 
+	/// Sends a message to the socket, resolving when the appropriate
+	/// acknowledgement is received.
 	pub async fn send_with_ack(&self, message: MessageData) -> ClientResult<Option<AcknowledgeData>> {
 		let ack_id = message.ack_id().unwrap(); // TODO: change this?
 		let message = StealthStreamMessage::Message(message);
@@ -205,6 +219,12 @@ impl RawClient {
 	pub fn peer_address(&self) -> &AddressContext { &self.peer_address }
 
 	pub fn is_connected(&self) -> bool { self.connection_state.load(Ordering::SeqCst) }
+
+	/// Retrieves the state for the client.
+	///
+	/// The state can be used particularly in server-side code to track the
+	/// state of the client.
+	pub async fn state(&self) -> &Arc<InnerState> { &self.state }
 }
 
 #[derive(Clone)]
@@ -224,7 +244,7 @@ pub struct Client {
 	/// successful handshake. This will be None if this is the client's first
 	/// connection.
 	pub(crate) session_id: Option<Uuid>,
-	/// Custom event handler defined by the client for use in recieving messages
+	/// Custom event handler defined by the client for use in receiving messages
 	/// from the server.
 	event_handler: Arc<dyn ClientMessageCallback>,
 	/// Headers sent during the initial handshake.
@@ -575,7 +595,7 @@ mod tests {
 	async fn test_basic_send() {
 		let (server, client) = server_client_setup1!();
 
-		let message = super::StealthStreamMessage::Message(MessageData::new(b"Test Message!", false, false));
+		let message = StealthStreamMessage::Message(MessageData::new(b"Test Message!", false, false));
 		assert!(client.send(message).await.is_ok());
 		drop(server)
 	}
@@ -614,7 +634,7 @@ mod tests {
 		let (_, client) = server_client_setup1!({
 			move |recieved_message, _, _| {
 				let tx = tx.clone();
-				info!("Recieved message: {}", recieved_message);
+				info!("Received message: {}", recieved_message);
 				pin_callback!({
 					tx.send(recieved_message).await.unwrap();
 				})

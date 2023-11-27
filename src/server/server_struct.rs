@@ -20,7 +20,7 @@ pub struct Server {
 	poke_delay: u64,
 	handshake_timeout: u64,
 	namespace_handlers: HashMap<String, Namespace>,
-	state: Arc<InnerState>,
+	server_state: Arc<InnerState>,
 	#[cfg(feature = "tls")]
 	tls_config: Arc<ServerConfig>,
 }
@@ -28,7 +28,7 @@ impl Server {
 	/// Used internally by the ServerBuilder to create a new [Server] instance.
 	pub(super) fn new(
 		listener: TcpListener, address: SocketAddr, poke_delay: u64, handshake_timeout: u64,
-		namespace_handlers: HashMap<String, Namespace>, state: Arc<InnerState>,
+		namespace_handlers: HashMap<String, Namespace>, server_state: Arc<InnerState>,
 		#[cfg(feature = "tls")] server_config: Option<ServerConfig>,
 	) -> Self {
 		#[cfg(feature = "signals")] // TODO: implement this properly or not at all?
@@ -46,7 +46,7 @@ impl Server {
 			poke_delay,
 			handshake_timeout,
 			namespace_handlers,
-			state,
+			server_state,
 			#[cfg(feature = "tls")]
 			tls_config: Arc::new(server_config.unwrap()),
 		}
@@ -93,8 +93,8 @@ impl Server {
 	async fn handle_client(&self, client: Arc<RawClient>) {
 		let timeout = self.handshake_timeout;
 		let handshake_result =
-			HandshakeData::start_server_handshake(&client, &self.namespace_handlers, &self.state, timeout).await;
-		let state = &self.state;
+			HandshakeData::start_server_handshake(&client, &self.namespace_handlers, &self.server_state, timeout).await;
+		let state = &self.server_state;
 		match handshake_result {
 			Ok(data) => {
 				let namespace = data.namespace.to_string();
@@ -178,7 +178,7 @@ impl Server {
 		});
 	}
 
-	/// Spawns a write task that will recieve messages from the mpsc channel and
+	/// Spawns a write task that will receive messages from the mpsc channel and
 	/// send them to the callback/event handler.
 	fn spawn_write_task(&self, client: &Arc<RawClient>, mut rx: mpsc::Receiver<StealthStreamMessage>, namespace: &str) {
 		let retrieved = self.namespace_handlers.get(namespace).unwrap();
@@ -186,7 +186,7 @@ impl Server {
 		let write_client = client.clone();
 		let close_callback = retrieved.handlers.on_close.clone();
 		let normal_callback = retrieved.handlers.on_message.clone();
-		let state = self.state.clone();
+		let state = self.server_state.clone();
 
 		tokio::task::spawn(async move {
 			while let Some(message) = rx.recv().await {
@@ -316,7 +316,7 @@ mod tests {
 		let (server, c) = server_client_setup!({
 			move |recieved_message, _, _| {
 				let tx = tx.clone();
-				info!("Recieved message: {:?}", recieved_message);
+				info!("Received message: {:?}", recieved_message);
 				pin_callback!({
 					tx.send(recieved_message).await.unwrap();
 				})
@@ -343,9 +343,9 @@ mod tests {
 			.expect("error shutting down the raw TcpStream");
 
 		let raw_stream_result = timeout(Duration::from_millis(500), rx.recv()).await;
-		assert!(raw_stream_result.is_err(), "Somehow recieved a successful message?");
+		assert!(raw_stream_result.is_err(), "Somehow received a successful message?");
 
-		/* Test Successful Recieve */
+		/* Test Successful Receive */
 		let packet = StealthStreamMessage::Message(MessageData::new(b"test", false, false));
 		c.send(packet).await.expect("error sending message");
 
