@@ -1,5 +1,6 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
+use serde_json::Value;
 use thiserror::Error;
 use tracing::{debug, info};
 
@@ -72,7 +73,7 @@ impl HandshakeData {
 
 	/// Sends the client handshake message to the server.
 	pub async fn start_client_handshake(
-		client: &Client, should_compress: bool, headers: Option<HashMap<String, String>>, namespace: &str,
+		client: &Client, should_compress: bool, headers: Option<HashMap<String, Value>>, namespace: &str,
 		auth: Option<AuthData>,
 	) -> ClientResult<()> {
 		client

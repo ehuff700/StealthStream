@@ -1,5 +1,6 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
+use serde_json::Value;
 use tracing::debug;
 
 use super::{Client, ClientMessageCallback, RawClient};
@@ -32,7 +33,7 @@ pub struct ClientBuilder {
 	pub(crate) should_compress: bool,
 
 	/// Headers which will be sent to the server during handshake time.
-	pub(crate) headers: Option<HashMap<String, String>>,
+	pub(crate) headers: Option<HashMap<String, Value>>,
 	/// Simple boolean to indicate whether or not the client should skip
 	/// certificate validation. This should only be used for testing purposes
 	/// **AND IS NOT SAFE** for production use.
@@ -90,12 +91,20 @@ impl ClientBuilder {
 	///
 	/// If this method has been called before, the new headers will be appended
 	/// to the current ones.
-	pub fn with_headers(mut self, handshake_headers: HashMap<String, String>) -> Self {
+	pub fn with_headers<T>(mut self, handshake_headers: HashMap<String, T>) -> Self
+	where
+		T: Into<Value>,
+	{
+		let modified = handshake_headers
+			.into_iter()
+			.map(|(k, v)| (k, v.into()))
+			.collect::<HashMap<String, Value>>();
+
 		self.headers = if let Some(mut headers) = self.headers {
-			headers.extend(handshake_headers);
+			headers.extend(modified);
 			Some(headers)
 		} else {
-			Some(handshake_headers)
+			Some(modified)
 		};
 		self
 	}

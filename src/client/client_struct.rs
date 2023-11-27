@@ -14,6 +14,7 @@ use rustls::ClientConfig;
 #[cfg(feature = "tls")]
 use rustls::{RootCertStore, ServerName};
 use serde::Deserialize;
+use serde_json::Value;
 use tokio::{net::TcpStream, signal};
 #[cfg(feature = "tls")]
 use tokio_rustls::{TlsConnector, TlsStream};
@@ -248,7 +249,7 @@ pub struct Client {
 	/// from the server.
 	event_handler: Arc<dyn ClientMessageCallback>,
 	/// Headers sent during the initial handshake.
-	headers: Option<HashMap<String, String>>,
+	headers: Option<HashMap<String, Value>>,
 	/// Whether or not the client should compress the stream using LZ4.
 	should_compress: bool,
 	/// Whether or not the client should skip certificate validation.

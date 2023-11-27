@@ -15,7 +15,7 @@ use crate::protocol::{
 };
 
 #[derive(Debug, PartialEq)]
-/// An overarching enum repsenting the different types of messages that can be
+/// An overarching enum representing the different types of messages that can be
 /// sent over a StealthStream.
 pub enum StealthStreamMessage {
 	Handshake(HandshakeData),

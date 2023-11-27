@@ -2,6 +2,7 @@ use std::{collections::HashMap, fmt::Display};
 
 use bytes::{Buf, Bytes};
 use derive_getters::Getters;
+use serde_json::Value;
 
 use super::{GoodbyeCodes, StealthStreamPacketParser};
 use crate::protocol::{
@@ -21,7 +22,7 @@ pub struct HandshakeData {
 	pub(crate) should_compress: bool,
 	pub(crate) namespace: String,
 	pub(crate) auth: Option<AuthData>,
-	pub(crate) headers: HashMap<String, String>,
+	pub(crate) headers: HashMap<String, Value>,
 }
 
 impl StealthStreamPacketParser for HandshakeData {
@@ -87,7 +88,7 @@ impl StealthStreamPacketParser for HandshakeData {
 			let headers_len = bytes.get_u16() as usize;
 			let slice = bytes.copy_to_bytes(headers_len);
 			Some(
-				serde_json::from_slice::<HashMap<String, String>>(&slice.to_vec())
+				serde_json::from_slice::<HashMap<String, Value>>(&slice.to_vec())
 					.map_err(|_| StealthStreamPacketError::InvalidHeaders)?,
 			)
 		} else {
@@ -210,8 +211,8 @@ impl Display for HandshakeData {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		write!(
 			f,
-			"HandshakeData(version={}, should_compress={}, namespace={}, auth={:?})",
-			self.version, self.should_compress, self.namespace, self.auth
+			"HandshakeData(version={}, should_compress={}, namespace={}, auth={:?}, headers={:?})",
+			self.version, self.should_compress, self.namespace, self.auth, self.headers
 		)
 	}
 }
@@ -245,7 +246,7 @@ impl AuthData {
 
 impl HandshakeData {
 	pub fn new(
-		version: u8, should_compress: bool, headers: Option<HashMap<String, String>>, namespace: &str,
+		version: u8, should_compress: bool, headers: Option<HashMap<String, Value>>, namespace: &str,
 		auth: Option<AuthData>,
 	) -> Self {
 		let namespace = namespace.to_string();
