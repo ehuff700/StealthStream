@@ -17,7 +17,6 @@ use crate::{
 		control::{AuthData, GoodbyeData, HandshakeData},
 		StealthStreamMessage,
 	},
-	server::state::InnerState,
 };
 
 pub type ServerResult<T> = Result<T, LibraryError>;
@@ -70,11 +69,11 @@ impl<F> CloseCallback for F where
 
 /// This trait is used by the server whenever a new connection is authenticated.
 pub trait AuthCallback:
-	Fn(&AuthData, Arc<RawClient>, Arc<InnerState>) -> BoxedBoolFuture + Sync + Send + 'static
+	Fn(AuthData, Arc<RawClient>, Arc<InnerState>) -> BoxedBoolFuture + Sync + Send + 'static
 {
 }
 
 impl<F> AuthCallback for F where
-	F: Fn(&AuthData, Arc<RawClient>, Arc<InnerState>) -> BoxedBoolFuture + Sync + Send + 'static
+	F: Fn(AuthData, Arc<RawClient>, Arc<InnerState>) -> BoxedBoolFuture + Sync + Send + 'static
 {
 }

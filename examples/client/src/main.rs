@@ -27,7 +27,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
 	tokio::task::spawn({
 		let cloned = client.clone();
-		async move { cloned.listen().await.unwrap() }
+		async move {
+			if let Err(e) = cloned.listen().await {
+				error!("Error listening: {:?}", e);
+			}
+		}
 	});
 
 	let test = client

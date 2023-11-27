@@ -11,13 +11,13 @@ use super::{
 use crate::{
 	client::{Client, ClientResult, RawClient},
 	errors::{Error, ServerErrors},
-	server::{state::InnerState, AuthCallback, Namespace, ServerResult},
+	server::{InnerState, Namespace, ServerResult},
 };
 
 impl HandshakeData {
 	pub async fn start_server_handshake(
-		client: &Arc<RawClient>, namespace_handlers: &HashMap<String, Namespace>,
-		state: &Arc<InnerState>, handshake_timeout: u64,
+		client: &Arc<RawClient>, namespace_handlers: &HashMap<String, Namespace>, state: &Arc<InnerState>,
+		handshake_timeout: u64,
 	) -> ServerResult<HandshakeData> {
 		let configured_timeout = Duration::from_millis(handshake_timeout);
 

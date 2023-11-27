@@ -418,7 +418,7 @@ mod tests {
 		errors::ClientErrors,
 		pin_callback,
 		protocol::{data::MessageData, StealthStreamMessage, StealthStreamPacket, StealthStreamPacketError},
-		server::{Server, ServerBuilder, ServerMessageCallback},
+		server::{Namespace, Server, ServerBuilder, ServerMessageCallback},
 	};
 
 	macro_rules! server_client_setup1 {
@@ -535,7 +535,7 @@ mod tests {
 		let (server, mut client) = server_client_setup1!(
 			{
 				let cloned = tx.clone();
-				move |recieved_message, _| {
+				move |recieved_message, _, _| {
 					let tx = cloned.clone();
 					pin_callback!({
 						tx.send(recieved_message).await.unwrap();

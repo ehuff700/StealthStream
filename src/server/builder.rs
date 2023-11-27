@@ -23,12 +23,7 @@ use super::{
 };
 #[cfg(feature = "tls")]
 use crate::errors::Error;
-use crate::{
-	client::RawClient,
-	pin_auth_callback,
-	protocol::control::AuthData,
-	server::state::{InnerState, State},
-};
+use crate::server::state::{InnerState, State};
 
 /// Utility Struct to build a [Server] as needed
 pub struct ServerBuilder {
@@ -41,14 +36,6 @@ pub struct ServerBuilder {
 	/// The accepted delay (in ms) in which a client must negotiate a successful
 	/// handshake.
 	handshake_timeout: u64,
-	/// An optional callback which will be invoked when a client attempts to
-	/// authenticate. This authenication callback should return `Ok(true)` if
-	/// the client is authenticated, `Ok(false)` if not, and can optionally
-	/// return an error to be sent to the client with Err(e).
-	///
-	/// If one is not provided, a default callback will be used which simply
-	/// return `Ok(true)`.
-	auth_callback: Option<Arc<dyn AuthCallback>>,
 	/// Namespace event handlers are a key-value map of namespace identifiers to
 	/// their respective event handlers. This is optional and can be used if you
 	/// want to define your own event handlers for namespaces.
@@ -78,7 +65,6 @@ impl ServerBuilder {
 			port: 7007,
 			poke_delay: 5000,
 			handshake_timeout: 2000,
-			auth_callback: None,
 			namespace_event_handlers,
 			state: InnerState::default(),
 			#[cfg(feature = "tls")]
@@ -190,7 +176,6 @@ impl ServerBuilder {
 	pub async fn build(self) -> ServerResult<Server> {
 		let address = SocketAddr::new(self.address, self.port);
 		let listener = TcpListener::bind(address).await?;
-		let auth_callback = self.auth_callback.unwrap_or(Self::default_auth_callback());
 		let inner_state = Arc::new(self.state);
 		#[cfg(feature = "tls")]
 		{
@@ -221,7 +206,6 @@ impl ServerBuilder {
 				SocketAddr::new(self.address, self.port),
 				self.poke_delay,
 				self.handshake_timeout,
-				auth_callback,
 				self.namespace_event_handlers,
 				inner_state,
 				Some(config),
@@ -234,16 +218,10 @@ impl ServerBuilder {
 				SocketAddr::new(self.address, self.port),
 				self.poke_delay,
 				self.handshake_timeout,
-				auth_callback,
 				self.namespace_event_handlers,
 				inner_state,
 			))
 		}
-	}
-
-	fn default_auth_callback() -> Arc<dyn AuthCallback> {
-		let handler = |_: &AuthData, _: Arc<RawClient>, _: Arc<InnerState>| pin_auth_callback!({ Ok(true) });
-		Arc::new(handler)
 	}
 }
 

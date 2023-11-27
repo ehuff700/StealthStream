@@ -2,8 +2,7 @@ use std::sync::Arc;
 
 use tracing::debug;
 
-use super::{CloseCallback, OpenCallback, ServerMessageCallback, AuthCallback};
-
+use super::{AuthCallback, CloseCallback, OpenCallback, ServerMessageCallback};
 use crate::{
 	client::RawClient,
 	pin_auth_callback, pin_callback,
@@ -46,7 +45,7 @@ impl Namespace {
 
 	/// Defines an event handler which will be invoked when a message is
 	/// received.
-	pub fn onmessage(&mut self, message_callback: impl ServerMessageCallback) -> Self {
+	pub fn onmessage(&mut self, message_callback: impl ServerMessageCallback) {
 		self.handlers.on_message = Arc::new(message_callback);
 	}
 
@@ -71,15 +70,15 @@ pub(crate) struct EventHandler {
 impl EventHandler {
 	fn default_message_handler() -> Arc<dyn ServerMessageCallback> {
 		let handler = |message: StealthStreamMessage, _: Arc<RawClient>, _: Arc<InnerState>| {
-            pin_callback!({
+			pin_callback!({
 				debug!(target: "default_message_handler", "Received message: {:?}", message);
 			})
-        };
-            Arc::new(handler)
-        }
+		};
+		Arc::new(handler)
+	}
 
 	fn default_auth_handler() -> Arc<dyn AuthCallback> {
-		let handler = |_: AuthData, _: Arc<RawClient>| pin_auth_callback!({ Ok(true) });
+		let handler = |_: AuthData, _: Arc<RawClient>, _: Arc<InnerState>| pin_auth_callback!({ Ok(true) });
 		Arc::new(handler)
 	}
 
