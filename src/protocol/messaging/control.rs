@@ -21,7 +21,7 @@ pub struct HandshakeData {
 	pub(crate) should_compress: bool,
 	pub(crate) namespace: String,
 	pub(crate) auth: Option<AuthData>,
-	pub(crate) headers: Option<HashMap<String, String>>,
+	pub(crate) headers: HashMap<String, String>,
 }
 
 impl StealthStreamPacketParser for HandshakeData {
@@ -31,9 +31,9 @@ impl StealthStreamPacketParser for HandshakeData {
 		handshake.push(self.should_compress as u8);
 
 		// Headers
-		if let Some(headers) = &self.headers {
+		if !&self.headers.is_empty() {
 			handshake.push(1); // Headers present
-			let headers_bytes = serde_json::to_string(headers).unwrap();
+			let headers_bytes = serde_json::to_string(&self.headers).unwrap();
 			let headers_len = headers_bytes.len() as u16;
 
 			handshake.extend(headers_len.to_be_bytes());
@@ -92,7 +92,8 @@ impl StealthStreamPacketParser for HandshakeData {
 			)
 		} else {
 			None
-		};
+		}
+		.unwrap_or_default();
 
 		let namespace_len = bytes.get_u16() as usize;
 		let namespace = String::from_utf8(bytes.copy_to_bytes(namespace_len).to_vec()).map_err(|e| {
@@ -251,7 +252,7 @@ impl HandshakeData {
 		Self {
 			version,
 			should_compress,
-			headers,
+			headers: headers.unwrap_or_default(),
 			namespace,
 			auth,
 		}
