@@ -43,7 +43,12 @@ pub struct ServerBuilder {
 	/// At the very minimum, by default this will have one entry to handle the
 	/// root "/" namespace.
 	namespace_event_handlers: HashMap<String, Namespace>,
-	state: InnerState,
+	/// This represents any state objects that should be shared within the
+	/// server.
+	server_state: InnerState,
+	/// This represents any state objects that should be embedded within any
+	/// [RawClient] instances.
+	client_state: InnerState,
 	#[cfg(feature = "tls")]
 	/// The path to the TLS certificate.
 	cert_file_path: Option<PathBuf>,
@@ -66,7 +71,8 @@ impl ServerBuilder {
 			poke_delay: 5000,
 			handshake_timeout: 2000,
 			namespace_event_handlers,
-			state: InnerState::default(),
+			server_state: InnerState::default(),
+			client_state: InnerState::default(),
 			#[cfg(feature = "tls")]
 			cert_file_path: None,
 			#[cfg(feature = "tls")]
@@ -149,11 +155,23 @@ impl ServerBuilder {
 	///
 	/// This method can be used to store any objects that need to be persisted
 	/// during the lifetime of the server.
-	pub fn with_state<T>(mut self, state: State<T>) -> Self
+	pub fn with_server_state<T>(mut self, state: State<T>) -> Self
 	where
 		T: Send + Sync + 'static,
 	{
-		self.state.insert(state);
+		self.server_state.insert(state);
+		self
+	}
+
+	/// Adds a new [State] object to each connected [RawClient] instance.
+	///
+	/// This method can be used to store any objects that need to be persisted
+	/// during the lifetime of the client.
+	pub fn with_client_state<T>(mut self, state: State<T>) -> Self
+	where
+		T: Send + Sync + 'static,
+	{
+		self.client_state.insert(state);
 		self
 	}
 
@@ -176,7 +194,8 @@ impl ServerBuilder {
 	pub async fn build(self) -> ServerResult<Server> {
 		let address = SocketAddr::new(self.address, self.port);
 		let listener = TcpListener::bind(address).await?;
-		let inner_state = Arc::new(self.state);
+		let inner_server_state = Arc::new(self.server_state);
+		let inner_client_state = Arc::new(self.client_state);
 		#[cfg(feature = "tls")]
 		{
 			let cert_file_path = self
@@ -207,7 +226,7 @@ impl ServerBuilder {
 				self.poke_delay,
 				self.handshake_timeout,
 				self.namespace_event_handlers,
-				inner_state,
+				inner_server_state,
 				Some(config),
 			))
 		}
@@ -219,7 +238,8 @@ impl ServerBuilder {
 				self.poke_delay,
 				self.handshake_timeout,
 				self.namespace_event_handlers,
-				inner_state,
+				inner_server_state,
+				inner_client_state
 			))
 		}
 	}

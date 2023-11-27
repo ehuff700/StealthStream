@@ -21,6 +21,7 @@ pub struct Server {
 	handshake_timeout: u64,
 	namespace_handlers: HashMap<String, Namespace>,
 	server_state: Arc<InnerState>,
+	client_state: Arc<InnerState>,
 	#[cfg(feature = "tls")]
 	tls_config: Arc<ServerConfig>,
 }
@@ -28,7 +29,7 @@ impl Server {
 	/// Used internally by the ServerBuilder to create a new [Server] instance.
 	pub(super) fn new(
 		listener: TcpListener, address: SocketAddr, poke_delay: u64, handshake_timeout: u64,
-		namespace_handlers: HashMap<String, Namespace>, server_state: Arc<InnerState>,
+		namespace_handlers: HashMap<String, Namespace>, server_state: Arc<InnerState>, client_state: Arc<InnerState>,
 		#[cfg(feature = "tls")] server_config: Option<ServerConfig>,
 	) -> Self {
 		#[cfg(feature = "signals")] // TODO: implement this properly or not at all?
@@ -47,6 +48,7 @@ impl Server {
 			handshake_timeout,
 			namespace_handlers,
 			server_state,
+			client_state,
 			#[cfg(feature = "tls")]
 			tls_config: Arc::new(server_config.unwrap()),
 		}
@@ -64,7 +66,7 @@ impl Server {
 		loop {
 			match self.listener.accept().await {
 				Ok((tcp_stream, address)) => {
-					debug!("Accepted connection from {:?}", address);
+					debug!("Accepted TCP connection from {:?}", address);
 
 					#[cfg(feature = "tls")]
 					let tls_stream = match acceptor.accept(tcp_stream).await {
@@ -76,9 +78,9 @@ impl Server {
 					};
 
 					#[cfg(not(feature = "tls"))]
-					let client = Arc::new(RawClient::from_stream(tcp_stream, address));
+					let client = Arc::new(RawClient::from_stream(tcp_stream, address, self.client_state.clone()));
 					#[cfg(feature = "tls")]
-					let client = Arc::new(RawClient::from_tls_stream(tls_stream, address));
+					let client = Arc::new(RawClient::from_tls_stream(tls_stream, address, self.client_state.clone()));
 					self.handle_client(client).await;
 				},
 				Err(e) => {

@@ -123,10 +123,9 @@ impl RawClient {
 	/// Creates a new [RawClient] from a [TcpStream] and
 	/// [SocketAddr]. This method is typically used to create a raw client on
 	/// the server side.
-	pub(crate) fn from_stream(socket: TcpStream, address: SocketAddr) -> Self {
+	pub(crate) fn from_stream(socket: TcpStream, address: SocketAddr, state: Arc<InnerState>) -> Self {
 		let connection_state = Arc::new(AtomicBool::new(true));
 		let raw_socket = Arc::new(socket.into());
-		let state = Arc::new(InnerState::default());
 
 		Self {
 			raw_socket,
@@ -140,12 +139,13 @@ impl RawClient {
 	/// Creates a new [RawClient] from a [ServerTlsStream<TcpStream>] and
 	/// [SocketAddr]. This method is typically used to create a raw client on
 	/// the server side.
-	pub(crate) fn from_tls_stream(socket: ServerTlsStream<TcpStream>, address: SocketAddr) -> Self {
+	pub(crate) fn from_tls_stream(
+		socket: ServerTlsStream<TcpStream>, address: SocketAddr, state: Arc<InnerState>,
+	) -> Self {
 		use crate::protocol::tls::TlsStreamEnum;
 
 		let connection_state = Arc::new(AtomicBool::new(true));
 		let raw_socket = Arc::new(TlsStreamEnum::from(socket).into());
-		let state = Arc::new(InnerState::default());
 
 		Self {
 			raw_socket,
