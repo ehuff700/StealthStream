@@ -19,7 +19,7 @@ use serde_json::Value;
 use tokio::{net::TcpStream, signal};
 #[cfg(feature = "tls")]
 use tokio_rustls::{TlsConnector, TlsStream};
-use tracing::{debug, error};
+use tracing::{debug, error, info};
 use uuid::Uuid;
 
 use super::{ClientBuilder, ClientMessageCallback};
@@ -204,7 +204,7 @@ impl RawClient {
 	pub async fn disconnect(&self) -> ClientResult<()> {
 		self.send(StealthStreamMessage::create_goodbye(GRACEFUL)).await?;
 		self.raw_socket.close().await?;
-		self.connection_state.store(false, Ordering::SeqCst);
+		self.update_connection_state(false).await;
 		Ok(())
 	}
 
@@ -213,7 +213,7 @@ impl RawClient {
 		self.send(StealthStreamMessage::create_goodbye_with_reason(code, reason))
 			.await?;
 		self.raw_socket.close().await?;
-		self.connection_state.store(false, Ordering::SeqCst);
+		self.update_connection_state(false).await;
 		Ok(())
 	}
 
@@ -222,6 +222,11 @@ impl RawClient {
 	/// This method will return `None` if the underlying socket is closed.
 	pub async fn receive(&self) -> Option<Result<StealthStreamMessage, StealthStreamPacketError>> {
 		self.raw_socket.read().await
+	}
+
+	pub async fn update_connection_state(&self, state: bool) {
+		self.raw_socket.close().await.unwrap();
+		self.connection_state.store(state, Ordering::SeqCst);
 	}
 
 	/* Getters */
@@ -357,14 +362,32 @@ impl Client {
 	pub async fn listen(&self) -> StealthStreamResult<()> {
 		let inner = self.inner()?;
 		let callback = &self.event_handler;
-		while inner.is_connected() {
-			while let Some(packet) = inner.receive().await {
-				match packet {
-					Ok(message) => {
+		while let Some(packet) = inner.receive().await {
+			match packet {
+				Ok(message) => {
+					if matches!(message, StealthStreamMessage::Goodbye(_)) {
+						info!("server sent goodbye message");
+						debug!("goodbye data: {}", message);
+						inner.update_connection_state(false).await;
 						callback(message, inner.clone()).await;
-					},
-					Err(e) => return Err(e)?, // TODO: handle errors on the client side
-				}
+						break; // TODO: explore whether it's needed to still call the
+						 // callback (add on close?)
+					} else {
+						callback(message, inner.clone()).await;
+					}
+				},
+				Err(e) => {
+					if matches!(e, StealthStreamPacketError::StreamClosed) {
+						inner.update_connection_state(false).await;
+						return Err(e)?;
+					} else {
+						error!("Error reading from server {:?}", e);
+						let _ = inner
+							.send(StealthStreamMessage::create_error_message(1, &e.to_string()))
+							.await;
+						// TODO: Review better error codes
+					}
+				},
 			}
 		}
 		Ok(())
@@ -597,6 +620,7 @@ mod tests {
 		});
 
 		let r = rx.recv().await;
+		println!("{:?}", r);
 		// Test that server sends a goodbye message to the client, because an attempt to
 		// access a privileged namespace. TODO: enhance this to assert_eq
 		assert!(r.is_some_and(|a| matches!(a, StealthStreamMessage::Goodbye(_))));

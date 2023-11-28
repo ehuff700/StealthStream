@@ -117,7 +117,8 @@ impl Server {
 			},
 			Err(e) => {
 				error!("Error handshaking for client: {:?}", e);
-				let _ = client.disconnect_with_reason(INVALID_HANDSHAKE, &e.to_string()).await;
+				let test = client.disconnect_with_reason(INVALID_HANDSHAKE, &e.to_string()).await;
+				error!("what was test: {:?}", test);
 				drop(client);
 			},
 		}
