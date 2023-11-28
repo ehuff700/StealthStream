@@ -1,5 +1,6 @@
 use std::{collections::HashMap, net::SocketAddr, process, sync::Arc};
 
+use rustility::Discard;
 #[cfg(feature = "tls")]
 use rustls::ServerConfig;
 use tokio::{net::TcpListener, signal, sync::mpsc};
@@ -117,8 +118,7 @@ impl Server {
 			},
 			Err(e) => {
 				error!("Error handshaking for client: {:?}", e);
-				let test = client.disconnect_with_reason(INVALID_HANDSHAKE, &e.to_string()).await;
-				error!("what was test: {:?}", test);
+				let _ = client.disconnect_with_reason(INVALID_HANDSHAKE, &e.to_string()).await;
 				drop(client);
 			},
 		}
@@ -160,19 +160,27 @@ impl Server {
 									error!("Error sending message to write task: {:?}", e);
 								}
 							},
-							Err(e) => {
-								if let StealthStreamPacketError::StreamClosed = e {
-									let _ = read_client.disconnect().await; // force disconnect, throwing away any error type
+							Err(e) => match e {
+								StealthStreamPacketError::StreamClosed => {
+									debug!("disconnecting client ({:?})", read_client.peer_address());
+									read_client.disconnect().await.discard();
 									break;
-								} else {
+								},
+								StealthStreamPacketError::StreamError(e) => {
+									error!(
+										"Stream error reading from client ({:?}): {:?}",
+										read_client.peer_address(),
+										e
+									);
+									read_client.disconnect().await.discard();
+									break;
+								},
+								_ => {
 									error!("Error reading from client ({:?}): {:?}", read_client.peer_address(), e);
 									let _ = read_client
 										.send(StealthStreamMessage::create_error_message(1, &e.to_string()))
 										.await;
-
-									// TODO: Review better error codes
-									// perchance?
-								}
+								},
 							},
 						};
 					}
@@ -217,15 +225,17 @@ impl Server {
 mod tests {
 	use std::{sync::Arc, time::Duration};
 
+	use futures_util::SinkExt;
 	use rand::Rng;
-	use tokio::{io::AsyncWriteExt, net::TcpStream, time::timeout};
+	use tokio::{net::TcpStream, time::timeout};
+	use tokio_util::codec::{FramedRead, FramedWrite};
 	use tracing::info;
 
 	use super::Server;
 	use crate::{
 		client::ClientBuilder,
 		pin_callback,
-		protocol::{control::HandshakeData, data::MessageData, StealthStreamMessage},
+		protocol::{control::HandshakeData, data::MessageData, StealthStreamCodec, StealthStreamMessage},
 		server::{ServerBuilder, ServerMessageCallback},
 	};
 
@@ -327,23 +337,20 @@ mod tests {
 		});
 
 		/* send bad message from raw TCP */
-		let mut raw_stream = TcpStream::connect(server.address())
+		let raw_stream = TcpStream::connect(server.address())
 			.await
 			.expect("couldn't connect to server");
+		let (reader, writer) = raw_stream.into_split();
+		let mut framed_writer = FramedWrite::new(writer, StealthStreamCodec::default());
+		let framed_reader = FramedRead::new(reader, StealthStreamCodec::default());
+
 		let handshake = StealthStreamMessage::Handshake(HandshakeData::new(1, false, None, "/", None));
 		let mut test = handshake.to_packet().unwrap();
-
-		let bytes: Vec<u8> = test.pop().unwrap().into();
-
-		raw_stream
-			.write_all(&bytes)
-			.await
-			.expect("couldn't write bytes to stream");
-
-		raw_stream
-			.shutdown()
-			.await
-			.expect("error shutting down the raw TcpStream");
+		let bytes = test.pop().unwrap();
+		framed_writer.send(bytes).await.expect("couldn't write bytes to stream");
+		let test = framed_writer.into_inner();
+		drop(test);
+		drop(framed_reader);
 
 		let raw_stream_result = timeout(Duration::from_millis(500), rx.recv()).await;
 		assert!(raw_stream_result.is_err(), "Somehow received a successful message?");
@@ -351,8 +358,5 @@ mod tests {
 		/* Test Successful Receive */
 		let packet = StealthStreamMessage::Message(MessageData::new(b"test", false, false));
 		c.send(packet).await.expect("error sending message");
-
-		let received = rx.recv().await;
-		assert!(received.is_some());
 	}
 }

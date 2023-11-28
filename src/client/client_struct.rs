@@ -10,6 +10,7 @@ use std::{
 };
 
 use anyhow::anyhow;
+use rustility::Discard;
 #[cfg(feature = "tls")]
 use rustls::ClientConfig;
 #[cfg(feature = "tls")]
@@ -202,8 +203,9 @@ impl RawClient {
 	/// This method will additionally close the underlying socket, preventing
 	/// any messages from being sent.
 	pub async fn disconnect(&self) -> ClientResult<()> {
-		self.send(StealthStreamMessage::create_goodbye(GRACEFUL)).await?;
-		self.raw_socket.close().await?;
+		self.send(StealthStreamMessage::create_goodbye(GRACEFUL))
+			.await
+			.discard();
 		self.update_connection_state(false).await;
 		Ok(())
 	}
@@ -211,8 +213,8 @@ impl RawClient {
 	/// Functionally the same as `disconnect`, but with a reason.
 	pub async fn disconnect_with_reason(&self, code: impl Into<GoodbyeCodes>, reason: &str) -> ClientResult<()> {
 		self.send(StealthStreamMessage::create_goodbye_with_reason(code, reason))
-			.await?;
-		self.raw_socket.close().await?;
+			.await
+			.discard();
 		self.update_connection_state(false).await;
 		Ok(())
 	}
@@ -225,7 +227,7 @@ impl RawClient {
 	}
 
 	pub async fn update_connection_state(&self, state: bool) {
-		self.raw_socket.close().await.unwrap();
+		self.raw_socket.close().await.discard();
 		self.connection_state.store(state, Ordering::SeqCst);
 	}
 
@@ -620,7 +622,6 @@ mod tests {
 		});
 
 		let r = rx.recv().await;
-		println!("{:?}", r);
 		// Test that server sends a goodbye message to the client, because an attempt to
 		// access a privileged namespace. TODO: enhance this to assert_eq
 		assert!(r.is_some_and(|a| matches!(a, StealthStreamMessage::Goodbye(_))));
