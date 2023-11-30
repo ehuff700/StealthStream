@@ -1,5 +1,8 @@
 use std::fmt::Display;
 
+use serde::Serialize;
+use uuid::Uuid;
+
 use super::{
 	control::{ErrorData, GoodbyeData, HandshakeData},
 	data::{AcknowledgeData, MessageData},
@@ -78,13 +81,13 @@ impl StealthStreamMessage {
 
 	/// Utility function which creates a utf-8 binary message from a string.
 	pub fn create_utf8_message(message: &str) -> Self {
-		let mdata = MessageData::new(message.as_bytes(), true, false);
+		let mdata = MessageData::new(message.as_bytes(), true);
 		Self::Message(mdata)
 	}
 
 	/// Utility function which creates a non-utf8 binary message.
 	pub fn create_binary_message(message: &[u8]) -> Self {
-		let mdata = MessageData::new(message, false, false);
+		let mdata = MessageData::new(message, false);
 		Self::Message(mdata)
 	}
 
@@ -94,12 +97,13 @@ impl StealthStreamMessage {
 		Self::Error(edata)
 	}
 
-	/// Determines whether or not the boolean needs an acknowledgement.
-	pub fn needs_ack(&self) -> bool {
-		match self {
-			StealthStreamMessage::Message(data) => data.ack_id().is_some(),
-			_ => false,
-		}
+	// Utility function which creates a [StealthStreamMessage::Acknowledge] message
+	pub fn create_acknowledgement<T>(ack_id: Uuid, content: T) -> Self
+	where
+		T: Serialize,
+	{
+		let ack_data = AcknowledgeData::new(ack_id, content);
+		Self::Acknowledge(ack_data)
 	}
 }
 

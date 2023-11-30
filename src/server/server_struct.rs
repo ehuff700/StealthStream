@@ -356,7 +356,7 @@ mod tests {
 		assert!(raw_stream_result.is_err(), "Somehow received a successful message?");
 
 		/* Test Successful Receive */
-		let packet = StealthStreamMessage::Message(MessageData::new(b"test", false, false));
+		let packet = StealthStreamMessage::Message(MessageData::new(b"test", false));
 		c.send(packet).await.expect("error sending message");
 	}
 }

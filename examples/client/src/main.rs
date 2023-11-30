@@ -1,8 +1,5 @@
 use serde::{Deserialize, Serialize};
-use stealthstream::{
-	client::ClientBuilder,
-	protocol::{data::MessageData, StealthStreamMessage},
-};
+use stealthstream::{client::ClientBuilder, protocol::StealthStreamMessage};
 use tracing::{debug, error};
 use tracing_subscriber::filter::LevelFilter;
 
@@ -35,7 +32,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 	});
 
 	let test = client
-		.send_with_ack::<TestAck>(MessageData::new("hey".as_bytes(), true, true))
+		.send_with_ack::<TestAck>(TestAck {
+			string: "test".to_string(),
+		})
 		.await;
 
 	debug!("test: {:?}", test);

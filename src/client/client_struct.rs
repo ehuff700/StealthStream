@@ -15,7 +15,7 @@ use rustility::Discard;
 use rustls::ClientConfig;
 #[cfg(feature = "tls")]
 use rustls::{RootCertStore, ServerName};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::{net::TcpStream, signal};
 #[cfg(feature = "tls")]
@@ -31,7 +31,7 @@ use crate::{
 	protocol::{
 		constants::GRACEFUL,
 		control::{AuthData, HandshakeData},
-		data::{AcknowledgeData, MessageData},
+		data::AcknowledgeData,
 		GoodbyeCodes, StealthStream, StealthStreamMessage, StealthStreamPacketError,
 	},
 	server::InnerState,
@@ -181,9 +181,12 @@ impl RawClient {
 
 	/// Sends a message to the socket, resolving when the appropriate
 	/// acknowledgement is received.
-	pub async fn send_with_ack(&self, message: MessageData) -> ClientResult<Option<AcknowledgeData>> {
-		let ack_id = message.ack_id().unwrap(); // TODO: change this?
-		let message = StealthStreamMessage::Message(message);
+	pub async fn send_with_ack<T>(&self, message: T) -> ClientResult<Option<AcknowledgeData>>
+	where
+		T: Serialize,
+	{
+		let ack_id = Uuid::new_v4();
+		let message = StealthStreamMessage::Acknowledge(AcknowledgeData::new(ack_id, message));
 
 		if self.is_connected() {
 			self.raw_socket
@@ -342,14 +345,13 @@ impl Client {
 	pub async fn send(&self, message: StealthStreamMessage) -> ClientResult<()> { self.inner()?.send(message).await }
 
 	/// Sends a message from the client while waiting for an acknowledgement.
-	pub async fn send_with_ack<T>(&self, message: MessageData) -> ClientResult<T>
+	pub async fn send_with_ack<Ack>(&self, message: impl Serialize) -> ClientResult<Ack>
 	where
-		T: for<'a> Deserialize<'a> + Send + Sync + 'static,
+		Ack: for<'a> Deserialize<'a> + Send + Sync + 'static,
 	{
-		debug!("was this triggered");
 		let ack = self.inner()?.send_with_ack(message).await?;
 		if let Some(ack) = ack {
-			let content = ack.deserialize::<T>()?;
+			let content = ack.deserialize::<Ack>()?;
 			Ok(content)
 		} else {
 			Err(StealthStreamPacketError::StreamClosed)?
@@ -631,7 +633,7 @@ mod tests {
 	async fn test_basic_send() {
 		let (server, client) = server_client_setup1!();
 
-		let message = StealthStreamMessage::Message(MessageData::new(b"Test Message!", false, false));
+		let message = StealthStreamMessage::Message(MessageData::new(b"Test Message!", false));
 		assert!(client.send(message).await.is_ok());
 		drop(server)
 	}
@@ -653,11 +655,11 @@ mod tests {
 		});
 
 		/* Test Successful Receive */
-		let expected = StealthStreamMessage::Message(MessageData::new(test_txt.as_bytes(), true, false));
+		let expected = StealthStreamMessage::Message(MessageData::new(test_txt.as_bytes(), true));
 		client.send(expected).await.expect("error sending message");
 
 		let received = rx.recv().await.expect("didn't receive valid stealthstream message");
-		let expected = StealthStreamMessage::Message(MessageData::new(test_txt.as_bytes(), true, false));
+		let expected = StealthStreamMessage::Message(MessageData::new(test_txt.as_bytes(), true));
 
 		assert_eq!(received, expected, "the received message did not match the expected one");
 	}
@@ -691,7 +693,7 @@ mod tests {
 		assert!(received.is_err());
 
 		/* Assert that normal packets can be sent after bad ones */
-		let expected = StealthStreamMessage::Message(MessageData::new(b"hey", true, false));
+		let expected = StealthStreamMessage::Message(MessageData::new(b"hey", true));
 		client.send(expected).await.unwrap();
 		let received = timeout(Duration::from_millis(300), rx.recv()).await;
 		assert!(received.is_ok_and(|v| v.is_some()));

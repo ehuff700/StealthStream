@@ -1,5 +1,6 @@
 use std::{net::IpAddr, sync::Arc};
 
+use rustility::Discard;
 use serde::{Deserialize, Serialize};
 use stealthstream::{
 	client::RawClient,
@@ -20,22 +21,27 @@ pub struct TestAck {
 
 async fn callback_function(message_type: StealthStreamMessage, client: Arc<RawClient>) {
 	debug!("Received message: {}", message_type);
-	if message_type.needs_ack() {
-		if let StealthStreamMessage::Message(message) = message_type {
-			debug!("send ack?: {:?}", message.ack_id());
-			let _ = client
-				.send(StealthStreamMessage::Acknowledge(AcknowledgeData::new(
-					message.ack_id().unwrap(),
-					TestAck {
-						string: "test".to_string(),
-					},
-				)))
-				.await;
-		}
-	} else if let StealthStreamMessage::Message(_) = message_type {
-		let _ = client
-			.send(StealthStreamMessage::create_utf8_message("Hey from server"))
-			.await;
+	match message_type {
+		StealthStreamMessage::Message(_) => {
+			client
+				.send(StealthStreamMessage::create_utf8_message("Hey from server"))
+				.await
+				.discard();
+		},
+		StealthStreamMessage::Acknowledge(data) => {
+			let ack_id = data.ack_id();
+			let content = data.content();
+			debug!("Received acknowledgement with id: {} and content: {:?}", ack_id, content);
+			let ack = TestAck {
+				string: "ack from server".to_string(),
+			};
+
+			client
+				.send(StealthStreamMessage::Acknowledge(AcknowledgeData::new(*ack_id, ack)))
+				.await
+				.discard();
+		},
+		_ => (),
 	}
 }
 

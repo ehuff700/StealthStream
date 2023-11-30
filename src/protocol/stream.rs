@@ -90,7 +90,6 @@ impl StealthStream {
 	/// Waits for an acknowledgement packet from the underlying stream
 	pub async fn wait_for_ack(&self, ack_id: Uuid) -> Result<Option<AcknowledgeData>, StealthStreamPacketError> {
 		let mut reader = self.reader.lock().await;
-
 		while let Some(result) = reader.next().await {
 			match result {
 				Ok(packet) => {
@@ -151,7 +150,6 @@ impl From<TcpStream> for StealthStream {
 			FramedRead::new(read_half, StealthStreamCodec::default());
 		let framed_writer: FramedWrite<OwnedWriteHalf, StealthStreamCodec> =
 			FramedWrite::new(write_half, StealthStreamCodec::default());
-
 		Self {
 			writer: Mutex::new(framed_writer),
 			reader: Mutex::new(framed_reader),

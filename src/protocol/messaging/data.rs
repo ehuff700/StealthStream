@@ -8,7 +8,7 @@ use uuid::Uuid;
 use super::StealthStreamPacketParser;
 use crate::protocol::{framing::FrameOpcodes, StealthStreamPacket, StealthStreamPacketError};
 
-#[derive(Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Serialize, Getters, Deserialize, PartialEq)]
 pub struct AcknowledgeData {
 	pub(crate) ack_id: Uuid,
 	pub(crate) content: Vec<u8>,
@@ -36,7 +36,6 @@ impl StealthStreamPacketParser for AcknowledgeData {
 pub struct MessageData {
 	is_utf_8: bool,
 	content: Vec<u8>,
-	ack_id: Option<Uuid>,
 }
 
 impl StealthStreamPacketParser for MessageData {
@@ -44,13 +43,6 @@ impl StealthStreamPacketParser for MessageData {
 		let bytes = &self.content;
 		let mut array = Vec::with_capacity(self.content.len());
 		array.push(self.is_utf_8 as u8);
-
-		if let Some(uuid) = self.ack_id.as_ref() {
-			array.push(1); // 1 means we have an ack_id
-			array.extend_from_slice(uuid.as_bytes())
-		} else {
-			array.push(0); // 0 means we don't have an ack_id
-		}
 		array.extend_from_slice(bytes);
 		(FrameOpcodes::Binary, array)
 	}
@@ -65,18 +57,9 @@ impl StealthStreamPacketParser for MessageData {
 			_ => return Err(StealthStreamPacketError::ArbitraryBytes([potential_is_utf_8].to_vec())),
 		};
 
-		let has_slice = message_buffer.get_u8();
-
-		let ack_id = match has_slice {
-			0 => None,
-			1 => Some(Uuid::from_u128(message_buffer.get_u128())),
-			_ => return Err(StealthStreamPacketError::ArbitraryBytes([has_slice].to_vec())),
-		};
-
 		Ok(Self {
 			is_utf_8,
 			content: message_buffer.to_vec(),
-			ack_id,
 		})
 	}
 }
@@ -93,21 +76,15 @@ impl Display for MessageData {
 
 impl Display for AcknowledgeData {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		write!(f, "AcknowledgeData(ack_id={:#?})", self.ack_id)
+		write!(f, "AcknowledgeData(ack_id={:?}, content={:#?})", self.ack_id, self.content)
 	}
 }
 
 /* New Implementations */
 impl MessageData {
-	pub fn new(msg: &[u8], is_utf_8: bool, should_ack: bool) -> Self {
-		let ack_id = match should_ack {
-			true => Some(Uuid::new_v4()),
-			false => None,
-		};
-
+	pub fn new(msg: &[u8], is_utf_8: bool) -> Self {
 		Self {
 			is_utf_8,
-			ack_id,
 			content: msg.to_vec(),
 		}
 	}
