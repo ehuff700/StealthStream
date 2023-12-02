@@ -185,6 +185,7 @@ impl RawClient {
 	where
 		T: Serialize,
 	{
+		println!("did i get here?");
 		let ack_id = Uuid::new_v4();
 		let message = StealthStreamMessage::Acknowledge(AcknowledgeData::new(ack_id, message));
 

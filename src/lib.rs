@@ -7,7 +7,7 @@ pub mod server;
 
 use errors::Error;
 
-pub type StealthStreamResult<T> = std::result::Result<T, Error>;
+pub type StealthStreamResult<T> = Result<T, Error>;
 
 #[macro_export]
 macro_rules! pin_callback {

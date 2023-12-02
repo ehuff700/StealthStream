@@ -90,11 +90,14 @@ impl StealthStream {
 	/// Waits for an acknowledgement packet from the underlying stream
 	pub async fn wait_for_ack(&self, ack_id: Uuid) -> Result<Option<AcknowledgeData>, StealthStreamPacketError> {
 		let mut reader = self.reader.lock().await;
+		println!("did i get here?");
 		while let Some(result) = reader.next().await {
 			match result {
 				Ok(packet) => {
+					println!("this was packet: {:?}", packet);
 					let message = StealthStreamMessage::from_packet(packet).await?;
 					if let StealthStreamMessage::Acknowledge(ack) = message {
+						println!("what is ack: {:?}", ack);
 						if ack.ack_id == ack_id {
 							return Ok(Some(ack));
 						}
