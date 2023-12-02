@@ -1,4 +1,4 @@
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{pin_mut, SinkExt, StreamExt, TryStreamExt};
 #[cfg(feature = "tls")]
 use tokio::io::{split, ReadHalf, WriteHalf};
 #[cfg(not(feature = "tls"))]
@@ -14,6 +14,7 @@ use uuid::Uuid;
 use super::{
 	data::AcknowledgeData, StealthStreamCodec, StealthStreamMessage, StealthStreamPacket, StealthStreamPacketError,
 };
+use crate::protocol::framing::FrameOpcodes;
 
 #[derive(Debug)]
 #[cfg(not(feature = "tls"))]
@@ -71,14 +72,43 @@ impl StealthStream {
 	/// Once a packet has been read from the frame reader, it will be
 	/// deserialized into a [StealthStreamMessage]. If that was not successful,
 	/// this method will return a [StealthStreamPacketError]
-	pub async fn read(&self) -> Option<Result<StealthStreamMessage, StealthStreamPacketError>> {
+	pub async fn client_read(&self) -> Option<Result<StealthStreamMessage, StealthStreamPacketError>> {
+		let next_result = {
+			let mut guard = self.reader.lock().await;
+			let new_stream = guard.by_ref().try_filter_map(|p| async move {
+				let ret = if p.frame_opcode() != FrameOpcodes::Acknowledgement {
+					Some(p)
+				} else {
+					None
+				};
+				Ok(ret)
+			});
+			pin_mut!(new_stream);
+			new_stream.next().await
+		};
+		self._read(next_result).await
+	}
+
+	/// Reads a [StealthStreamMessage] from the underlying stream.
+	///
+	/// This method will return `None` if the underlying stream is closed.
+	/// Otherwise, it will attempt to read from the stream via `next()`.
+	///
+	/// Once a packet has been read from the frame reader, it will be
+	/// deserialized into a [StealthStreamMessage]. If that was not successful,
+	/// this method will return a [StealthStreamPacketError]
+	pub async fn server_read(&self) -> Option<Result<StealthStreamMessage, StealthStreamPacketError>> {
 		let next_result = {
 			let mut guard = self.reader.lock().await;
 			guard.next().await
 		};
+		self._read(next_result).await
+	}
 
+	pub async fn _read(
+		&self, next_result: Option<Result<StealthStreamPacket, StealthStreamPacketError>>,
+	) -> Option<Result<StealthStreamMessage, StealthStreamPacketError>> {
 		if let Some(result) = next_result {
-			println!("this was packet: {:?}", result);
 			match result {
 				Ok(packet) => Some(StealthStreamMessage::from_packet(packet).await),
 				Err(e) => Some(Err(e)),
@@ -90,22 +120,43 @@ impl StealthStream {
 
 	/// Waits for an acknowledgement packet from the underlying stream
 	pub async fn wait_for_ack(&self, ack_id: Uuid) -> Result<Option<AcknowledgeData>, StealthStreamPacketError> {
-		let mut reader = self.reader.lock().await;
-		println!("did i get here?");
-		while let Some(result) = reader.next().await {
-			match result {
-				Ok(packet) => {
-					println!("this was packet: {:?}", packet);
-					let message = StealthStreamMessage::from_packet(packet).await?;
-					if let StealthStreamMessage::Acknowledge(ack) = message {
-						println!("what is ack: {:?}", ack);
-						if ack.ack_id == ack_id {
-							return Ok(Some(ack));
+		let next_result = {
+			let mut stream = self.reader.lock().await;
+			let new_stream = stream.by_ref().filter_map(|r| async move {
+				match r {
+					Ok(packet) => {
+						if packet.frame_opcode() == FrameOpcodes::Acknowledgement {
+							match StealthStreamMessage::from_packet(packet).await {
+								Ok(m) => {
+									if let StealthStreamMessage::Acknowledge(data) = m {
+										if data.ack_id == ack_id {
+											Some(Ok(data))
+										} else {
+											None
+										}
+									} else {
+										None
+									}
+								},
+								Err(e) => Some(Err(e)),
+							}
+						} else {
+							None
 						}
-					}
-				},
-				Err(e) => return Err(e),
-			}
+					},
+					Err(e) => Some(Err(e)),
+				}
+			});
+
+			pin_mut!(new_stream);
+			new_stream.next().await
+		};
+
+		while let Some(result) = next_result {
+			return match result {
+				Ok(message) => Ok(Some(message)),
+				Err(e) => Err(e),
+			};
 		}
 
 		Ok(None)

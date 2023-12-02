@@ -185,7 +185,6 @@ impl RawClient {
 	where
 		T: Serialize,
 	{
-		println!("did i get here?");
 		let ack_id = Uuid::new_v4();
 		let message = StealthStreamMessage::Acknowledge(AcknowledgeData::new(ack_id, message));
 
@@ -227,7 +226,7 @@ impl RawClient {
 	///
 	/// This method will return `None` if the underlying socket is closed.
 	pub async fn receive(&self) -> Option<Result<StealthStreamMessage, StealthStreamPacketError>> {
-		self.raw_socket.read().await
+		self.raw_socket.server_read().await
 	}
 
 	pub async fn update_connection_state(&self, state: bool) {
@@ -367,7 +366,8 @@ impl Client {
 	pub async fn listen(&self) -> StealthStreamResult<()> {
 		let inner = self.inner()?;
 		let callback = &self.event_handler;
-		while let Some(packet) = inner.receive().await {
+
+		while let Some(packet) = inner.raw_socket.client_read().await {
 			match packet {
 				Ok(message) => {
 					if matches!(message, StealthStreamMessage::Goodbye(_)) {

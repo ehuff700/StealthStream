@@ -133,7 +133,9 @@ impl StealthStreamPacket {
 	pub fn content(&self) -> &[u8] { &self.content }
 
 	pub fn into_content(self) -> Vec<u8> { self.content }
-
+	
+	pub fn frame_opcode(&self) -> FrameOpcodes { self.opcode }
+	
 	pub fn needs_message_id(&self) -> bool {
 		matches!(self.flag, FrameFlags::Beginning | FrameFlags::Continuation | FrameFlags::End)
 			&& self.opcode.is_data_frame()
