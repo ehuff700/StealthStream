@@ -78,6 +78,7 @@ impl StealthStream {
 		};
 
 		if let Some(result) = next_result {
+			println!("this was packet: {:?}", result);
 			match result {
 				Ok(packet) => Some(StealthStreamMessage::from_packet(packet).await),
 				Err(e) => Some(Err(e)),
