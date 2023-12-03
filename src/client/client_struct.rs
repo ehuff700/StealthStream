@@ -17,7 +17,14 @@ use rustls::ClientConfig;
 use rustls::{RootCertStore, ServerName};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::{net::TcpStream, signal};
+use tokio::{
+	net::TcpStream,
+	signal,
+	sync::{
+		mpsc::{Receiver, Sender},
+		Mutex,
+	},
+};
 #[cfg(feature = "tls")]
 use tokio_rustls::{TlsConnector, TlsStream};
 use tracing::{debug, error, info};
@@ -179,26 +186,6 @@ impl RawClient {
 		}
 	}
 
-	/// Sends a message to the socket, resolving when the appropriate
-	/// acknowledgement is received.
-	pub async fn send_with_ack<T>(&self, message: T) -> ClientResult<Option<AcknowledgeData>>
-	where
-		T: Serialize,
-	{
-		let ack_id = Uuid::new_v4();
-		let message = StealthStreamMessage::Acknowledge(AcknowledgeData::new(ack_id, message));
-
-		if self.is_connected() {
-			self.raw_socket
-				.write_all(message.to_packet()?)
-				.await
-				.map_err(ClientErrors::from)?;
-			Ok(self.raw_socket.wait_for_ack(ack_id).await.map_err(ClientErrors::from)?)
-		} else {
-			Err(StealthStreamPacketError::StreamClosed)?
-		}
-	}
-
 	/// Gracefully disconnects the client from the server by sending a
 	/// [StealthStreamMessage::Goodbye] message as well as updating the
 	/// connection state.
@@ -226,7 +213,7 @@ impl RawClient {
 	///
 	/// This method will return `None` if the underlying socket is closed.
 	pub async fn receive(&self) -> Option<Result<StealthStreamMessage, StealthStreamPacketError>> {
-		self.raw_socket.server_read().await
+		self.raw_socket.read().await
 	}
 
 	pub async fn update_connection_state(&self, state: bool) {
@@ -253,6 +240,7 @@ impl RawClient {
 /// Client object wrapping a RawClient, typically used in client side code.
 pub struct Client {
 	inner: Option<Arc<RawClient>>,
+	ack_channel: (Arc<Sender<AcknowledgeData>>, Arc<Mutex<Receiver<AcknowledgeData>>>),
 	/// Whether or not the client should attempt to reconnect when disconnected.
 	should_reconnect: bool,
 	/// The interval of time between reconnect attempts. If this parameter is
@@ -302,6 +290,8 @@ impl Client {
 
 		};*/
 
+		tokio::task::spawn(async move {});
+
 		// Setup a ctrl + c listener to gracefully close the connection.
 		#[cfg(feature = "signals")] // TODO: make sure this only runs once.
 		tokio::task::spawn({
@@ -345,17 +335,24 @@ impl Client {
 	pub async fn send(&self, message: StealthStreamMessage) -> ClientResult<()> { self.inner()?.send(message).await }
 
 	/// Sends a message from the client while waiting for an acknowledgement.
-	pub async fn send_with_ack<Ack>(&self, message: impl Serialize) -> ClientResult<Ack>
+	pub async fn send_with_ack<Ack>(&self, data: impl Serialize) -> ClientResult<Ack>
 	where
 		Ack: for<'a> Deserialize<'a> + Send + Sync + 'static,
 	{
-		let ack = self.inner()?.send_with_ack(message).await?;
-		if let Some(ack) = ack {
-			let content = ack.deserialize::<Ack>()?;
-			Ok(content)
-		} else {
-			Err(StealthStreamPacketError::StreamClosed)?
+		let data = AcknowledgeData::new(Uuid::new_v4(), data);
+		let ack_id = *data.ack_id();
+		let message = StealthStreamMessage::Acknowledge(data);
+
+		let (_, rx) = self.ack_channel.clone();
+		let mut guard = rx.lock().await;
+		self.send(message).await?;
+		while let Some(ack) = guard.recv().await {
+			if ack.ack_id == ack_id {
+				let content = ack.deserialize::<Ack>()?;
+				return Ok(content);
+			}
 		}
+		return Err(StealthStreamPacketError::StreamClosed)?;
 	}
 
 	/// Spawns a blocking loop which listens for incoming messages from the
@@ -367,19 +364,19 @@ impl Client {
 		let inner = self.inner()?;
 		let callback = &self.event_handler;
 
-		while let Some(packet) = inner.raw_socket.client_read().await {
+		while let Some(packet) = inner.raw_socket.read().await {
 			match packet {
-				Ok(message) => {
-					if matches!(message, StealthStreamMessage::Goodbye(_)) {
-						info!("server sent goodbye message");
-						debug!("goodbye data: {}", message);
+				Ok(message) => match message {
+					StealthStreamMessage::Acknowledge(data) => {
+						let (tx, _) = self.ack_channel.clone();
+						tx.send(data).await.unwrap();
+					},
+					StealthStreamMessage::Goodbye(ref data) => {
 						inner.update_connection_state(false).await;
 						callback(message, inner.clone()).await;
-						break; // TODO: explore whether it's needed to still call the
-						 // callback (add on close?)
-					} else {
-						callback(message, inner.clone()).await;
-					}
+						break;
+					},
+					_ => callback(message, inner.clone()).await,
 				},
 				Err(e) => {
 					if matches!(e, StealthStreamPacketError::StreamClosed) {
@@ -449,6 +446,9 @@ impl Client {
 
 impl From<ClientBuilder> for Client {
 	fn from(value: ClientBuilder) -> Self {
+		let (ack_tx, ack_rx) = tokio::sync::mpsc::channel::<AcknowledgeData>(50);
+		let ack_channel = (Arc::new(ack_tx), Arc::new(Mutex::new(ack_rx)));
+
 		Self {
 			inner: None,
 			session_id: None,
@@ -460,6 +460,7 @@ impl From<ClientBuilder> for Client {
 			event_handler: value
 				.event_handler
 				.unwrap_or_else(|| ClientBuilder::default_event_handler()),
+			ack_channel,
 			#[cfg(feature = "tls")]
 			skip_certificate_validation: value.skip_certificate_validation,
 		}

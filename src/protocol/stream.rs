@@ -1,4 +1,4 @@
-use futures_util::{pin_mut, SinkExt, StreamExt, TryStreamExt};
+use futures_util::{SinkExt, StreamExt};
 #[cfg(feature = "tls")]
 use tokio::io::{split, ReadHalf, WriteHalf};
 #[cfg(not(feature = "tls"))]
@@ -9,12 +9,8 @@ use tokio_rustls::TlsStream;
 use tokio_util::codec::{FramedRead, FramedWrite};
 #[cfg(test)]
 use tracing::debug;
-use uuid::Uuid;
 
-use super::{
-	data::AcknowledgeData, StealthStreamCodec, StealthStreamMessage, StealthStreamPacket, StealthStreamPacketError,
-};
-use crate::protocol::framing::FrameOpcodes;
+use super::{StealthStreamCodec, StealthStreamMessage, StealthStreamPacket, StealthStreamPacketError};
 
 #[derive(Debug)]
 #[cfg(not(feature = "tls"))]
@@ -36,12 +32,6 @@ pub struct StealthStream {
 }
 
 impl StealthStream {
-	/// Sends a packet to the underlying stream using the FramedWriter.
-	pub async fn write(&self, data: StealthStreamPacket) -> Result<(), StealthStreamPacketError> {
-		let mut writer = self.writer.lock().await;
-		writer.send(data).await
-	}
-
 	/// Writes a `Vec<StealthStreamPacket>` to the underlying stream using the
 	/// FramedWriter.
 	///
@@ -72,42 +62,11 @@ impl StealthStream {
 	/// Once a packet has been read from the frame reader, it will be
 	/// deserialized into a [StealthStreamMessage]. If that was not successful,
 	/// this method will return a [StealthStreamPacketError]
-	pub async fn client_read(&self) -> Option<Result<StealthStreamMessage, StealthStreamPacketError>> {
-		let next_result = {
-			let mut guard = self.reader.lock().await;
-			let new_stream = guard.by_ref().try_filter_map(|p| async move {
-				let ret = if p.frame_opcode() != FrameOpcodes::Acknowledgement {
-					Some(p)
-				} else {
-					None
-				};
-				Ok(ret)
-			});
-			pin_mut!(new_stream);
-			new_stream.next().await
-		};
-		self._read(next_result).await
-	}
-
-	/// Reads a [StealthStreamMessage] from the underlying stream.
-	///
-	/// This method will return `None` if the underlying stream is closed.
-	/// Otherwise, it will attempt to read from the stream via `next()`.
-	///
-	/// Once a packet has been read from the frame reader, it will be
-	/// deserialized into a [StealthStreamMessage]. If that was not successful,
-	/// this method will return a [StealthStreamPacketError]
-	pub async fn server_read(&self) -> Option<Result<StealthStreamMessage, StealthStreamPacketError>> {
+	pub async fn read(&self) -> Option<Result<StealthStreamMessage, StealthStreamPacketError>> {
 		let next_result = {
 			let mut guard = self.reader.lock().await;
 			guard.next().await
 		};
-		self._read(next_result).await
-	}
-
-	pub async fn _read(
-		&self, next_result: Option<Result<StealthStreamPacket, StealthStreamPacketError>>,
-	) -> Option<Result<StealthStreamMessage, StealthStreamPacketError>> {
 		if let Some(result) = next_result {
 			match result {
 				Ok(packet) => Some(StealthStreamMessage::from_packet(packet).await),
@@ -116,50 +75,6 @@ impl StealthStream {
 		} else {
 			None
 		}
-	}
-
-	/// Waits for an acknowledgement packet from the underlying stream
-	pub async fn wait_for_ack(&self, ack_id: Uuid) -> Result<Option<AcknowledgeData>, StealthStreamPacketError> {
-		let next_result = {
-			let mut stream = self.reader.lock().await;
-			let new_stream = stream.by_ref().filter_map(|r| async move {
-				match r {
-					Ok(packet) => {
-						if packet.frame_opcode() == FrameOpcodes::Acknowledgement {
-							match StealthStreamMessage::from_packet(packet).await {
-								Ok(m) => {
-									if let StealthStreamMessage::Acknowledge(data) = m {
-										if data.ack_id == ack_id {
-											Some(Ok(data))
-										} else {
-											None
-										}
-									} else {
-										None
-									}
-								},
-								Err(e) => Some(Err(e)),
-							}
-						} else {
-							None
-						}
-					},
-					Err(e) => Some(Err(e)),
-				}
-			});
-
-			pin_mut!(new_stream);
-			new_stream.next().await
-		};
-
-		while let Some(result) = next_result {
-			return match result {
-				Ok(message) => Ok(Some(message)),
-				Err(e) => Err(e),
-			};
-		}
-
-		Ok(None)
 	}
 
 	/// Shuts down the underlying stream.
