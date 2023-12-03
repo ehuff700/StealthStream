@@ -15,7 +15,7 @@ use rustility::Discard;
 use rustls::ClientConfig;
 #[cfg(feature = "tls")]
 use rustls::{RootCertStore, ServerName};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::Value;
 use tokio::{
 	net::TcpStream,
@@ -191,17 +191,17 @@ impl RawClient {
 	///
 	/// This method **should not be called** by the public-facing Client struct,
 	/// as that has its own, separate implementation.
-	pub async fn send_with_ack<Ack>(&self, message: impl Serialize) -> ClientResult<Ack>
+	pub async fn send_with_ack<Ack>(&self, data: AcknowledgeData) -> ClientResult<Ack>
 	where
 		Ack: for<'a> Deserialize<'a>,
 	{
-		let ack_id = Uuid::new_v4();
-		let message = StealthStreamMessage::create_acknowledgement(ack_id, message);
+		let original_ack_id = data.ack_id;
+		let message = StealthStreamMessage::Acknowledge(data);
 		self.send(message).await?;
 
-		while let Some(Ok(StealthStreamMessage::Acknowledge(data))) = self.raw_socket.read().await {
-			if data.ack_id == ack_id {
-				let content = data.deserialize::<Ack>()?;
+		while let Some(Ok(StealthStreamMessage::Acknowledge(recv_ack))) = self.raw_socket.read().await {
+			if recv_ack.ack_id == original_ack_id {
+				let content = recv_ack.deserialize::<Ack>()?;
 				return Ok(content);
 			}
 		}
@@ -352,23 +352,24 @@ impl Client {
 	pub async fn send(&self, message: StealthStreamMessage) -> ClientResult<()> { self.inner()?.send(message).await }
 
 	/// Sends a message from the client while waiting for an acknowledgement.
-	pub async fn send_with_ack<Ack>(&self, data: impl Serialize) -> ClientResult<Ack>
+	pub async fn send_with_ack<Ack>(&self, data: AcknowledgeData) -> ClientResult<Ack>
 	where
 		Ack: for<'a> Deserialize<'a>,
 	{
-		let ack_id = Uuid::new_v4();
-		let data = AcknowledgeData::new(ack_id, data);
+		let original_ack_id = data.ack_id;
 		let message = StealthStreamMessage::Acknowledge(data);
 
 		let (_, rx) = self.ack_channel.clone();
 		let mut guard = rx.lock().await;
 		self.send(message).await?;
-		while let Some(ack) = guard.recv().await {
-			if ack.ack_id == ack_id {
-				let content = ack.deserialize::<Ack>()?;
+
+		while let Some(recv_ack) = guard.recv().await {
+			if recv_ack.ack_id == original_ack_id {
+				let content = recv_ack.deserialize::<Ack>()?;
 				return Ok(content);
 			}
 		}
+
 		return Err(StealthStreamPacketError::StreamClosed)?;
 	}
 

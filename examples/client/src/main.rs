@@ -1,7 +1,11 @@
 use serde::{Deserialize, Serialize};
-use stealthstream::{client::ClientBuilder, protocol::StealthStreamMessage};
+use stealthstream::{
+	client::ClientBuilder,
+	protocol::{data::AcknowledgeData, StealthStreamMessage},
+};
 use tracing::{debug, error};
 use tracing_subscriber::filter::LevelFilter;
+use uuid::Uuid;
 
 #[allow(dead_code)]
 #[derive(Deserialize, Serialize, Debug)]
@@ -32,9 +36,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 	});
 
 	let test = client
-		.send_with_ack::<TestAck>(TestAck {
-			string: "test".to_string(),
-		})
+		.send_with_ack::<TestAck>(AcknowledgeData::new(
+			Uuid::new_v4(),
+			TestAck {
+				string: "test".to_string(),
+			},
+		))
 		.await;
 
 	debug!("test: {:?}", test);
