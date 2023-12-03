@@ -193,7 +193,7 @@ impl RawClient {
 	/// as that has its own, separate implementation.
 	pub async fn send_with_ack<Ack>(&self, message: impl Serialize) -> ClientResult<Ack>
 	where
-		Ack: for<'a> Deserialize<'a> + Send + Sync + 'static,
+		Ack: for<'a> Deserialize<'a>,
 	{
 		let ack_id = Uuid::new_v4();
 		let message = StealthStreamMessage::create_acknowledgement(ack_id, message);
@@ -354,7 +354,7 @@ impl Client {
 	/// Sends a message from the client while waiting for an acknowledgement.
 	pub async fn send_with_ack<Ack>(&self, data: impl Serialize) -> ClientResult<Ack>
 	where
-		Ack: for<'a> Deserialize<'a> + Send + Sync + 'static,
+		Ack: for<'a> Deserialize<'a>,
 	{
 		let ack_id = Uuid::new_v4();
 		let data = AcknowledgeData::new(ack_id, data);
