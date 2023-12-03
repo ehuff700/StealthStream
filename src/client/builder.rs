@@ -3,7 +3,7 @@ use std::{collections::HashMap, sync::Arc, time::Duration};
 use serde_json::Value;
 use tracing::debug;
 
-use super::{Client, ClientMessageCallback, RawClient};
+use super::{Client, ClientMessageCallback};
 use crate::{pin_callback, protocol::StealthStreamMessage};
 
 pub struct ClientBuilder {
@@ -124,7 +124,7 @@ impl ClientBuilder {
 
 	/// Default event handler which simply logs the message.
 	pub(crate) fn default_event_handler() -> Arc<dyn ClientMessageCallback> {
-		let handler = |message: StealthStreamMessage, _: Arc<RawClient>| {
+		let handler = |message: StealthStreamMessage, _: Client| {
 			pin_callback!({
 				debug!(target: "default_event_handler", "Received message: {}", message);
 			})

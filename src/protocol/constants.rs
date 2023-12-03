@@ -7,15 +7,15 @@ pub const CONTINUATION_FLAG: u8 = 0x2;
 pub const END_FLAG: u8 = 0x3;
 
 /* Opcode Consts */
-/** Control Frames * */
+/* Control Frames */
 pub const HANDSHAKE_OPCODE: u8 = 0x0;
 pub const HEARTBEAT_OPCODE: u8 = 0x1;
 pub const GOODBYE_OPCODE: u8 = 0x2;
 pub const ERROR_OPCODE: u8 = 0x5;
 
-/** Data Frames */
+/* Data Frames */
 pub const MESSAGE_OPCODE: u8 = 0x3;
-pub const ACKNOWLEDGEMENT_OPCODE: u8 = 0x4; // TODO: implement
+pub const ACKNOWLEDGEMENT_OPCODE: u8 = 0x4;
 
 /* Framing Constants */
 /// The maximum length of a complete frame, in bytes.

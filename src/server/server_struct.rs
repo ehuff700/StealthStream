@@ -142,7 +142,7 @@ impl Server {
 			let read_client = client.clone();
 			async move {
 				while read_client.is_connected() {
-					while let Some(read_result) = read_client.receive().await {
+					while let Some(read_result) = read_client.socket().read().await {
 						match read_result {
 							Ok(message) => {
 								if matches!(message, StealthStreamMessage::Goodbye(_)) {

@@ -1,8 +1,10 @@
 use std::{collections::HashMap, sync::Arc, time::Duration};
 
+use anyhow::anyhow;
+use log::warn;
 use serde_json::Value;
 use thiserror::Error;
-use tracing::{debug, info};
+use tracing::{debug, trace};
 
 use super::{
 	constants::PROTOCOL_VERSION,
@@ -11,7 +13,7 @@ use super::{
 };
 use crate::{
 	client::{Client, ClientResult, RawClient},
-	errors::{Error, ServerErrors},
+	errors::{ClientErrors, Error, ServerErrors},
 	server::{InnerState, Namespace, ServerResult},
 };
 
@@ -22,7 +24,7 @@ impl HandshakeData {
 	) -> ServerResult<HandshakeData> {
 		let configured_timeout = Duration::from_millis(handshake_timeout);
 
-		let handshake_result = tokio::time::timeout(configured_timeout, client.receive())
+		let handshake_result = tokio::time::timeout(configured_timeout, client.socket().read())
 			.await
 			.map_err(|_| ServerErrors::from(HandshakeErrors::HandshakeTimeout(configured_timeout)))?;
 
@@ -42,13 +44,13 @@ impl HandshakeData {
 							Some(auth) => {
 								match auth_handler(auth.clone(), client.clone(), state.clone()).await {
 									Ok(true) => {
-										debug!("Successfully authenticated client {:?}", client.peer_address());
+										trace!("Successfully authenticated client {:?}", client.peer_address());
 									},
 									Ok(false) => {
 										return Err(ServerErrors::from(HandshakeErrors::NamespaceAuthFailed))?;
 									},
 									Err(_) => {
-										todo!();
+										todo!(); //TODO: handle auth errors
 									},
 								};
 							},
@@ -57,11 +59,13 @@ impl HandshakeData {
 					}
 
 					if data.should_compress {
-						debug!("Compressing stream....");
+						trace!("Compressing stream....");
 						client.socket().set_compression(true).await;
 					}
 
-					info!("Upgraded connection to StealthStream for client {:?}", client.peer_address());
+					// Send acknowledgement heartbeat, indicating that the handshake was successful
+					client.send(StealthStreamMessage::Heartbeat).await?;
+					trace!("Upgraded connection to StealthStream for client {:?}", client.peer_address());
 					Ok(data)
 				},
 				Err(e) => Err(e)?,
@@ -84,28 +88,44 @@ impl HandshakeData {
 				namespace,
 				auth,
 			)))
-			.await
+			.await?;
+
+		return match client.inner()?.socket().read().await {
+			Some(Ok(StealthStreamMessage::Goodbye(data))) => {
+				warn!("failed handshake: {:?}", data);
+				Err(ClientErrors::ConnectionError(anyhow!(data.to_string()).into()))
+			},
+			Some(Ok(StealthStreamMessage::Heartbeat)) => {
+				trace!("received initial heartbeat, handshake success");
+				Ok(())
+			},
+			Some(Err(e)) => Err(e)?,
+			None => Err(ClientErrors::ConnectionError(
+				anyhow!("couldn't receive any messages from the server").into(),
+			)),
+			_ => Ok(()),
+		};
 	}
 }
 
 #[derive(Debug, Error)]
 pub enum HandshakeErrors {
-	#[error("Arbitrary bytes detected")]
+	#[error("arbitrary bytes detected")]
 	ArbitraryBytes,
-	#[error("Namespace not found: {0}")]
+	#[error("namespace not found: {0}")]
 	NamespaceNotFound(String),
-	#[error("Auth missing for privileged namespace")]
+	#[error("auth missing for privileged namespace")]
 	NamespaceAuthMissing,
-	#[error("Authentication failed for privileged namespace")]
+	#[error("authentication failed for privileged namespace")]
 	NamespaceAuthFailed,
-	#[error("Handshake not received within the configured timeout: {0:?}")]
+	#[error("handshake not received within the configured timeout: {0:?}")]
 	HandshakeTimeout(Duration),
-	#[error("Error reading from buffer: {0}")]
+	#[error("error reading from buffer: {0}")]
 	BufferReadError(#[from] tokio::io::Error),
 	#[error("error parsing session id: {0}")]
 	SessionIdParseError(#[from] uuid::Error),
-	#[error("Unsupported version: {0}")]
+	#[error("unsupported version: {0}")]
 	UnsupportedVersion(u8),
-	#[error("Client attempted to skip handshake")]
+	#[error("client attempted to skip handshake")]
 	SkippedHandshake,
 }

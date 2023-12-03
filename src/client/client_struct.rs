@@ -27,7 +27,7 @@ use tokio::{
 };
 #[cfg(feature = "tls")]
 use tokio_rustls::{TlsConnector, TlsStream};
-use tracing::{debug, error, info};
+use tracing::{error, trace};
 use uuid::Uuid;
 
 use super::{ClientBuilder, ClientMessageCallback};
@@ -186,6 +186,28 @@ impl RawClient {
 		}
 	}
 
+	/// Sends a message from the client to the stream and waits for an
+	/// acknowledgement.
+	///
+	/// This method **should not be called** by the public-facing Client struct,
+	/// as that has its own, separate implementation.
+	pub async fn send_with_ack<Ack>(&self, message: impl Serialize) -> ClientResult<Ack>
+	where
+		Ack: for<'a> Deserialize<'a> + Send + Sync + 'static,
+	{
+		let ack_id = Uuid::new_v4();
+		let message = StealthStreamMessage::create_acknowledgement(ack_id, message);
+		self.send(message).await?;
+
+		while let Some(Ok(StealthStreamMessage::Acknowledge(data))) = self.raw_socket.read().await {
+			if data.ack_id == ack_id {
+				let content = data.deserialize::<Ack>()?;
+				return Ok(content);
+			}
+		}
+		return Err(StealthStreamPacketError::StreamClosed)?;
+	}
+
 	/// Gracefully disconnects the client from the server by sending a
 	/// [StealthStreamMessage::Goodbye] message as well as updating the
 	/// connection state.
@@ -207,13 +229,6 @@ impl RawClient {
 			.discard();
 		self.update_connection_state(false).await;
 		Ok(())
-	}
-
-	/// Receives a message from the stream.
-	///
-	/// This method will return `None` if the underlying socket is closed.
-	pub async fn receive(&self) -> Option<Result<StealthStreamMessage, StealthStreamPacketError>> {
-		self.raw_socket.read().await
 	}
 
 	pub async fn update_connection_state(&self, state: bool) {
@@ -284,13 +299,15 @@ impl Client {
 
 		HandshakeData::start_client_handshake(self, self.should_compress, self.headers.clone(), namespace, auth)
 			.await?;
-		/* TODO: fix this
-		if let Some(Ok(_value)) = self.inner()?.receive().await {
-		} else {
 
-		};*/
-
-		tokio::task::spawn(async move {});
+		tokio::task::spawn({
+			let cloned = self.clone();
+			async move {
+				if let Err(e) = cloned.listen().await {
+					error!("error when listening for messages: {:?}", e);
+				}
+			}
+		});
 
 		// Setup a ctrl + c listener to gracefully close the connection.
 		#[cfg(feature = "signals")] // TODO: make sure this only runs once.
@@ -339,8 +356,8 @@ impl Client {
 	where
 		Ack: for<'a> Deserialize<'a> + Send + Sync + 'static,
 	{
-		let data = AcknowledgeData::new(Uuid::new_v4(), data);
-		let ack_id = *data.ack_id();
+		let ack_id = Uuid::new_v4();
+		let data = AcknowledgeData::new(ack_id, data);
 		let message = StealthStreamMessage::Acknowledge(data);
 
 		let (_, rx) = self.ack_channel.clone();
@@ -369,37 +386,34 @@ impl Client {
 				Ok(message) => match message {
 					StealthStreamMessage::Acknowledge(data) => {
 						let (tx, _) = self.ack_channel.clone();
-						tx.send(data).await.unwrap();
+						tx.send(data).await.discard(); // we will send the message regardless if there
+						       // are listeners
 					},
 					StealthStreamMessage::Goodbye(ref data) => {
+						trace!("received goodbye message: {:?}", data);
 						inner.update_connection_state(false).await;
-						callback(message, inner.clone()).await;
+						callback(message, self.clone()).await;
 						break;
 					},
-					_ => callback(message, inner.clone()).await,
+					_ => callback(message, self.clone()).await,
 				},
 				Err(e) => {
+					// TODO: review whether or not stream error needs to be handled here.
 					if matches!(e, StealthStreamPacketError::StreamClosed) {
 						inner.update_connection_state(false).await;
 						return Err(e)?;
 					} else {
 						error!("Error reading from server {:?}", e);
-						let _ = inner
+						inner
 							.send(StealthStreamMessage::create_error_message(1, &e.to_string()))
-							.await;
+							.await
+							.discard();
 						// TODO: Review better error codes
 					}
 				},
 			}
 		}
 		Ok(())
-	}
-
-	/// Receives a message from the stream.
-	///
-	/// This method will return `None` if the underlying socket is closed.
-	pub async fn receive(&self) -> Option<Result<StealthStreamMessage, StealthStreamPacketError>> {
-		self.inner().unwrap().receive().await
 	}
 
 	/// Gracefully disconnects the client from the server by sending a
@@ -433,7 +447,7 @@ impl Client {
 
 	/// Convenience method used internally by the crate to return the inner
 	/// when we know it's valid.
-	pub fn inner(&self) -> ClientResult<Arc<RawClient>> {
+	pub(crate) fn inner(&self) -> ClientResult<Arc<RawClient>> {
 		if let Some(inner) = self.inner.as_ref() {
 			Ok(inner.clone())
 		} else {
@@ -466,7 +480,7 @@ impl From<ClientBuilder> for Client {
 		}
 	}
 }
-#[cfg(test)] // TODO: write namespace tests
+#[cfg(test)]
 mod tests {
 	use std::{sync::Arc, time::Duration};
 
@@ -479,7 +493,7 @@ mod tests {
 
 	use crate::{
 		client::ClientBuilder,
-		errors::ClientErrors,
+		errors::{ClientErrors, ClientErrors::ConnectionError},
 		pin_callback,
 		protocol::{data::MessageData, StealthStreamMessage, StealthStreamPacket, StealthStreamPacketError},
 		server::{Namespace, Server, ServerBuilder, ServerMessageCallback},
@@ -616,19 +630,18 @@ mod tests {
 			}
 		);
 
-		client
-			.connect_to_namespace(server.address(), "/admin", None)
-			.await
-			.unwrap();
-		tokio::task::spawn({
-			let cloned = client.clone();
-			async move { cloned.listen().await }
-		});
+		// Test that connection to a privileged namespace with no auth data
+		// fails.
+		let result = client.connect_to_namespace(server.address(), "/admin", None).await;
+		assert!(result.is_err_and(|e| matches!(e, ConnectionError(_))));
 
+		// Test that connection to a non-privileged namespace works
+		let result = client.connect_to_namespace(server.address(), "/client", None).await;
+		assert!(result.is_ok());
+
+		// Test that handshakes are successful
 		let r = rx.recv().await;
-		// Test that server sends a goodbye message to the client, because an attempt to
-		// access a privileged namespace. TODO: enhance this to assert_eq
-		assert!(r.is_some_and(|a| matches!(a, StealthStreamMessage::Goodbye(_))));
+		assert!(r.is_some_and(|m| matches!(m, StealthStreamMessage::Heartbeat)));
 	}
 
 	#[tokio::test]
