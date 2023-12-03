@@ -29,7 +29,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 	tokio::task::spawn({
 		let cloned = client.clone();
 		async move {
-			if let Err(e) = cloned.listen().await {
+			// prefer listen_with_ack over listen when you use send_with_ack
+			if let Err(e) = cloned.listen_with_ack().await {
 				error!("Error listening: {:?}", e);
 			}
 		}

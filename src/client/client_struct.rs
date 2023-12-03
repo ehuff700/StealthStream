@@ -1,6 +1,7 @@
 use std::{
 	collections::HashMap,
 	fmt::Display,
+	future::Future,
 	net::{SocketAddr, ToSocketAddrs},
 	sync::{
 		atomic::{AtomicBool, Ordering},
@@ -300,15 +301,6 @@ impl Client {
 		HandshakeData::start_client_handshake(self, self.should_compress, self.headers.clone(), namespace, auth)
 			.await?;
 
-		tokio::task::spawn({
-			let cloned = self.clone();
-			async move {
-				if let Err(e) = cloned.listen().await {
-					error!("error when listening for messages: {:?}", e);
-				}
-			}
-		});
-
 		// Setup a ctrl + c listener to gracefully close the connection.
 		#[cfg(feature = "signals")] // TODO: make sure this only runs once.
 		tokio::task::spawn({
@@ -376,19 +368,55 @@ impl Client {
 	/// Spawns a blocking loop which listens for incoming messages from the
 	/// server.
 	///
+	/// This function is not compatible with the send_with_ack methods. If you
+	/// don't need to use that method.
+	//  you can use this function instead, to have the client almost act as a
+	// server, processing ack messages to the callback.
+	pub async fn listen(&self) -> StealthStreamResult<()> {
+		let callback = &self.event_handler;
+		self._listen(|ack| async { callback(ack, self.clone()).await }).await
+	}
+
+	/// Spawns a blocking loop which listens for incoming messages from the
+	/// server.
+	///
+	/// This function adds support for the send_with_ack methods. Use this
+	/// function when you need a true client that doesn't need to respond to
+	/// incoming acknowledgement requests.
+	pub async fn listen_with_ack(&self) -> StealthStreamResult<()> {
+		self._listen(|ack| async {
+			if let StealthStreamMessage::Acknowledge(ack) = ack {
+				let (tx, _) = self.ack_channel.clone();
+				// send the message regardless if there are listeners
+				tx.send(ack).await.discard();
+			}
+			// this will never be possible
+		})
+		.await
+	}
+
+	/// Spawns a blocking loop which listens for incoming messages from the
+	/// server.
+	///
 	/// While the client is connected, it will receive messages from the server
 	/// and call the event handler of this client with the message.
-	pub async fn listen(&self) -> StealthStreamResult<()> {
+	///
+	/// This function will additionally call the ack handler for each
+	/// acknowledgement message that's received.
+	async fn _listen<F, Fut>(&self, ack_handler: F) -> StealthStreamResult<()>
+	where
+		Fut: Future<Output = ()>,
+		F: Fn(StealthStreamMessage) -> Fut,
+	{
 		let inner = self.inner()?;
 		let callback = &self.event_handler;
 
 		while let Some(packet) = inner.raw_socket.read().await {
 			match packet {
 				Ok(message) => match message {
-					StealthStreamMessage::Acknowledge(data) => {
-						let (tx, _) = self.ack_channel.clone();
-						tx.send(data).await.discard(); // we will send the message regardless if there
-						       // are listeners
+					StealthStreamMessage::Acknowledge(ref data) => {
+						trace!("received acknowledgement: {:?}", data);
+						ack_handler(message).await;
 					},
 					StealthStreamMessage::Goodbye(ref data) => {
 						trace!("received goodbye message: {:?}", data);
@@ -631,6 +659,13 @@ mod tests {
 			}
 		);
 
+		tokio::task::spawn({
+			let client = client.clone();
+			async move {
+				client.listen_with_ack().await.unwrap();
+			}
+		});
+
 		// Test that connection to a privileged namespace with no auth data
 		// fails.
 		let result = client.connect_to_namespace(server.address(), "/admin", None).await;
@@ -654,6 +689,12 @@ mod tests {
 		drop(server)
 	}
 
+	/// TODO: this test needs to be refactored.
+	/// The problem with this test is that it only tests whether or not the
+	/// server got the message. Instead, this test should be refactored to the
+	/// server side, and a new test should replace this one on the client.
+	/// The new test should test the full-end-to-end flow, client sends message,
+	/// server echos, and client receives.
 	#[tokio::test]
 	async fn test_basic_receive() {
 		//tracing_subscriber::fmt().with_max_level(LevelFilter::DEBUG).init();
